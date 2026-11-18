@@ -10,10 +10,14 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.AttributeSet
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.TextView
+import androidx.collection.LruCache
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
@@ -60,6 +64,7 @@ object SystemFontManager {
     private val hookedRecyclerViews = Collections.newSetFromMap(WeakHashMap<RecyclerView, Boolean>())
     private val hookedDecorViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
     private val hookedComposeViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val hookedLayoutInflaters = Collections.newSetFromMap(WeakHashMap<LayoutInflater, Boolean>())
 
     @Volatile private var cachedNormal: Typeface? = null
     @Volatile private var cachedBold: Typeface? = null
@@ -67,7 +72,7 @@ object SystemFontManager {
     @Volatile private var cachedBoldItalic: Typeface? = null
     @Volatile private var currentConfigToken: Int = 1
 
-    // Jetpack Compose reflection caches
+    // Jetpack Compose reflection references
     private var composeResolverClass: Class<*>? = null
     private var composeFontFamilyClass: Class<*>? = null
     private var composeDefaultFontFamily: Any? = null
@@ -79,15 +84,21 @@ object SystemFontManager {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager.")
+        Log.d(TAG, "Initializing SystemFontManager with instant multi-layer zero-flicker engine.")
 
         initComposeReflection()
         rebuildTypefaceCache()
         patchSystemFontMap()
+        hookTypefaceCompatCache()
         hookWindowManagerGlobal()
         registerLifecycleCallbacks(app)
 
         mainHandler.post {
+            findCurrentForegroundActivity()?.let { act ->
+                currentActivityRef = WeakReference(act)
+                hookLayoutInflater(act)
+                act.window?.decorView?.let { applyToViewTree(it) }
+            }
             sweepAllCurrentWindows()
         }
 
@@ -100,6 +111,7 @@ object SystemFontManager {
         hookedRecyclerViews.clear()
         hookedDecorViews.clear()
         hookedComposeViews.clear()
+        hookedLayoutInflaters.clear()
         originalTypefaces.clear()
     }
 
@@ -208,9 +220,143 @@ object SystemFontManager {
     }
 
     /**
-     * Inspects Jetpack Compose classes via reflection to enable replacing Compose's
-     * FontFamily with the Android device's System Font.
+     * Engine 1: TypefaceCompat Cache Interception.
+     * Hooks AndroidX TypefaceCompat.sTypefaceCache.
+     * When any layout or TextView resolves @font/google_sans via ResourcesCompat,
+     * TypefaceCompat.findFromCache() checks this cache first.
+     * Returning the system typeface directly prevents Google Sans from EVER loading!
      */
+    private fun hookTypefaceCompatCache() {
+        try {
+            val compatClass = Class.forName("androidx.core.graphics.TypefaceCompat")
+            val cacheField = compatClass.getDeclaredField("sTypefaceCache")
+            cacheField.isAccessible = true
+
+            // Clear any previously cached Google Sans entries
+            val existingCache = cacheField.get(null)
+            if (existingCache != null) {
+                try {
+                    val evictAllMethod = existingCache.javaClass.getMethod("evictAll")
+                    evictAllMethod.invoke(existingCache)
+                } catch (_: Throwable) {}
+            }
+
+            try {
+                val modifiersField = Field::class.java.getDeclaredField("accessFlags")
+                modifiersField.isAccessible = true
+                modifiersField.setInt(cacheField, cacheField.modifiers and Modifier.FINAL.inv())
+            } catch (_: Throwable) {}
+
+            val customCache = object : LruCache<String, Typeface>(256) {
+                override fun create(key: String): Typeface? {
+                    if (!isEnabled()) return null
+                    val isBoldByKey = key.contains("bold", ignoreCase = true) || key.contains("medium", ignoreCase = true)
+                    val isItalicByKey = key.contains("italic", ignoreCase = true)
+                    val styleInt = key.substringAfterLast("-").toIntOrNull() ?: Typeface.NORMAL
+                    val isBold = isBoldByKey || (styleInt and Typeface.BOLD != 0)
+                    val isItalic = isItalicByKey || (styleInt and Typeface.ITALIC != 0)
+
+                    return when {
+                        isBold && isItalic -> cachedBoldItalic ?: cachedBold ?: cachedNormal
+                        isBold -> cachedBold ?: cachedNormal
+                        isItalic -> cachedItalic ?: cachedNormal
+                        else -> cachedNormal
+                    }
+                }
+            }
+
+            cacheField.set(null, customCache)
+            Log.d(TAG, "TypefaceCompat.sTypefaceCache successfully hooked with instant font provider.")
+        } catch (e: Throwable) {
+            Log.d(TAG, "TypefaceCompat.sTypefaceCache hook fallback: ${e.message}")
+        }
+    }
+
+    /**
+     * Engine 2: LayoutInflater.Factory2 Interception.
+     * Intercepts view creation at inflation time.
+     * Every TextView, Button, Chip, or EditText created via XML inflation has its
+     * typeface and fakeBold properties assigned INSIDE onCreateView() BEFORE the view is
+     * ever attached or drawn on screen! This guarantees zero visual flicker.
+     */
+    fun hookLayoutInflater(activity: Activity) {
+        try {
+            val inflater = activity.layoutInflater
+            if (!hookedLayoutInflaters.add(inflater)) return
+
+            val mFactory2Field = LayoutInflater::class.java.getDeclaredField("mFactory2")
+            mFactory2Field.isAccessible = true
+            val currentFactory2 = mFactory2Field.get(inflater) as? LayoutInflater.Factory2
+
+            if (currentFactory2 != null && !Proxy.isProxyClass(currentFactory2.javaClass)) {
+                val wrappingFactory = object : LayoutInflater.Factory2 {
+                    override fun onCreateView(
+                        parent: View?,
+                        name: String,
+                        context: Context,
+                        attrs: AttributeSet
+                    ): View? {
+                        val view = currentFactory2.onCreateView(parent, name, context, attrs)
+                        if (view is TextView && isEnabled()) {
+                            applySingleTextView(view)
+                        }
+                        return view
+                    }
+
+                    override fun onCreateView(
+                        name: String,
+                        context: Context,
+                        attrs: AttributeSet
+                    ): View? {
+                        val view = currentFactory2.onCreateView(name, context, attrs)
+                        if (view is TextView && isEnabled()) {
+                            applySingleTextView(view)
+                        }
+                        return view
+                    }
+                }
+
+                mFactory2Field.set(inflater, wrappingFactory)
+
+                try {
+                    val mFactoryField = LayoutInflater::class.java.getDeclaredField("mFactory")
+                    mFactoryField.isAccessible = true
+                    if (mFactoryField.get(inflater) == currentFactory2) {
+                        mFactoryField.set(inflater, wrappingFactory)
+                    }
+                } catch (_: Throwable) {}
+
+                Log.d(TAG, "LayoutInflater.Factory2 successfully wrapped on ${activity.javaClass.simpleName}")
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "LayoutInflater hook error: ${e.message}")
+        }
+    }
+
+    private fun findCurrentForegroundActivity(): Activity? {
+        try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentActivityThreadMethod = activityThreadClass.getMethod("currentActivityThread")
+            currentActivityThreadMethod.isAccessible = true
+            val currentActivityThread = currentActivityThreadMethod.invoke(null)
+            val mActivitiesField = activityThreadClass.getDeclaredField("mActivities")
+            mActivitiesField.isAccessible = true
+            val mActivities = mActivitiesField.get(currentActivityThread) as? Map<*, *> ?: return null
+            for (activityRecord in mActivities.values) {
+                if (activityRecord == null) continue
+                val activityRecordClass = activityRecord.javaClass
+                val pausedField = activityRecordClass.getDeclaredField("paused")
+                pausedField.isAccessible = true
+                if (!pausedField.getBoolean(activityRecord)) {
+                    val activityField = activityRecordClass.getDeclaredField("activity")
+                    activityField.isAccessible = true
+                    return activityField.get(activityRecord) as? Activity
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
     private fun initComposeReflection() {
         try {
             composeResolverClass = Class.forName("androidx.compose.ui.text.font.FontFamily\$Resolver")
@@ -242,45 +388,98 @@ object SystemFontManager {
         }
     }
 
+    private fun clearComposeCaches() {
+        try {
+            val resolverKtClass = Class.forName("androidx.compose.ui.text.font.FontFamilyResolverKt")
+            for (fieldName in listOf("GlobalTypefaceRequestCache", "GlobalAsyncTypefaceCache")) {
+                try {
+                    val field = resolverKtClass.getDeclaredField(fieldName)
+                    field.isAccessible = true
+                    val cacheObj = field.get(null) ?: continue
+                    for (f in cacheObj.javaClass.declaredFields) {
+                        f.isAccessible = true
+                        val inner = f.get(cacheObj) ?: continue
+                        if (inner is LruCache<*, *>) {
+                            inner.evictAll()
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {}
+    }
+
     /**
-     * Intercepts Jetpack Compose's AndroidComposeView.fontFamilyResolver.
-     * Replaces any request for hardcoded Compose fonts with the device's System Font!
+     * Engine 4: Jetpack Compose Hook.
+     * Intercepts AndroidComposeView's fontFamilyResolver (supporting both raw field
+     * and MutableState<FontFamily.Resolver> delegates).
+     * Automatically triggers recomposition so Settings & Compose screens adopt System Font.
      */
     private fun hookComposeView(view: View) {
         val resolverClass = composeResolverClass ?: return
         val defaultFont = getComposeTargetFontFamily() ?: return
 
-        try {
-            var clazz: Class<*>? = view.javaClass
+        clearComposeCaches()
+
+        fun inspectAndHook(target: Any): Boolean {
+            var hooked = false
+            var clazz: Class<*>? = target.javaClass
             while (clazz != null && clazz != Any::class.java) {
                 for (field in clazz.declaredFields) {
-                    field.isAccessible = true
-                    val value = field.get(view) ?: continue
+                    try {
+                        field.isAccessible = true
+                        val value = field.get(target) ?: continue
 
-                    if (resolverClass.isInstance(value)) {
-                        if (!Proxy.isProxyClass(value.javaClass)) {
-                            val proxy = createComposeResolverProxy(resolverClass, value, defaultFont)
-                            field.set(view, proxy)
-                            Log.d(TAG, "Hooked Compose fontFamilyResolver on field ${field.name}")
-                            view.invalidate()
-                        }
-                    } else if (field.name == "composeViewContext" || field.name.contains("context", ignoreCase = true)) {
-                        for (innerField in value.javaClass.declaredFields) {
-                            innerField.isAccessible = true
-                            val innerVal = innerField.get(value) ?: continue
-                            if (resolverClass.isInstance(innerVal) && !Proxy.isProxyClass(innerVal.javaClass)) {
-                                val proxy = createComposeResolverProxy(resolverClass, innerVal, defaultFont)
-                                innerField.set(value, proxy)
-                                Log.d(TAG, "Hooked Compose fontFamilyResolver in context ${innerField.name}")
-                                view.invalidate()
+                        // Case 1: Direct instance of FontFamily.Resolver
+                        if (resolverClass.isInstance(value)) {
+                            if (!Proxy.isProxyClass(value.javaClass)) {
+                                val proxy = createComposeResolverProxy(resolverClass, value, defaultFont)
+                                field.set(target, proxy)
+                                hooked = true
+                                Log.d(TAG, "Hooked direct Compose resolver on ${field.name}")
+                            }
+                        } else {
+                            // Case 2: MutableState<FontFamily.Resolver> delegate
+                            val getValueMethod = try { value.javaClass.getMethod("getValue") } catch (_: Throwable) { null }
+                            if (getValueMethod != null) {
+                                val innerVal = getValueMethod.invoke(value)
+                                if (innerVal != null && resolverClass.isInstance(innerVal)) {
+                                    if (!Proxy.isProxyClass(innerVal.javaClass)) {
+                                        val proxy = createComposeResolverProxy(resolverClass, innerVal, defaultFont)
+                                        val setValueMethod = try {
+                                            value.javaClass.getMethod("setValue", Any::class.java)
+                                        } catch (_: Throwable) { null }
+
+                                        if (setValueMethod != null) {
+                                            setValueMethod.invoke(value, proxy)
+                                            hooked = true
+                                            Log.d(TAG, "Hooked Compose MutableState resolver on ${field.name}")
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Case 3: Nested compose context
+                            if (field.name == "composeViewContext" || field.name.contains("context", ignoreCase = true)) {
+                                if (inspectAndHook(value)) {
+                                    hooked = true
+                                }
                             }
                         }
-                    }
+                    } catch (_: Throwable) {}
                 }
                 clazz = clazz.superclass
             }
-        } catch (e: Throwable) {
-            Log.d(TAG, "Compose hook error: ${e.message}")
+            return hooked
+        }
+
+        if (inspectAndHook(view)) {
+            view.invalidate()
+        }
+
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                hookComposeView(view.getChildAt(i))
+            }
         }
     }
 
@@ -372,15 +571,18 @@ object SystemFontManager {
             app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                     currentActivityRef = WeakReference(activity)
+                    hookLayoutInflater(activity)
                     hookFragmentActivity(activity)
                 }
 
                 override fun onActivityStarted(activity: Activity) {
                     currentActivityRef = WeakReference(activity)
+                    hookLayoutInflater(activity)
                 }
 
                 override fun onActivityResumed(activity: Activity) {
                     currentActivityRef = WeakReference(activity)
+                    hookLayoutInflater(activity)
                     applyToViewTree(activity.window.decorView)
                 }
 
@@ -439,13 +641,58 @@ object SystemFontManager {
         }
     }
 
+    /**
+     * Engine 3: Pre-Render Enforcement (OnPreDrawListener).
+     * Attached to DecorViews. Executes before pixels are ever submitted to the display,
+     * guaranteeing the user never sees even a single frame of hardcoded Google Sans.
+     */
     fun applyToViewTree(root: View?) {
         if (root == null) return
+
+        if (hookedDecorViews.add(root)) {
+            try {
+                root.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if (!root.isAttachedToWindow) {
+                            try { root.viewTreeObserver.removeOnPreDrawListener(this) } catch (_: Throwable) {}
+                            hookedDecorViews.remove(root)
+                            return true
+                        }
+                        traverseAndApply(root, isEnabled())
+                        return true
+                    }
+                })
+            } catch (_: Throwable) {}
+        }
+
         traverseAndApply(root, isEnabled())
     }
 
+    fun applySingleTextView(view: TextView) {
+        if (!isEnabled()) return
+        val currentTag = view.getTag(TAG_APPLIED_CONFIG) as? Int
+        if (currentTag == currentConfigToken) return
+
+        if (!originalTypefaces.containsKey(view)) {
+            originalTypefaces[view] = view.typeface
+        }
+
+        val original = originalTypefaces[view]
+        val target = resolveTargetTypeface(original, true)
+
+        if (target != null && view.typeface !== target) {
+            view.typeface = target
+        }
+
+        val boost = isWeightBoostEnabled()
+        if (view.paint.isFakeBoldText != boost) {
+            view.paint.isFakeBoldText = boost
+        }
+
+        view.setTag(TAG_APPLIED_CONFIG, currentConfigToken)
+    }
+
     private fun traverseAndApply(view: View, enabled: Boolean) {
-        // 1. Android View System (TextView, Button, EditText, Chip, etc.)
         if (view is TextView) {
             val currentTag = view.getTag(TAG_APPLIED_CONFIG) as? Int
 
@@ -486,14 +733,12 @@ object SystemFontManager {
             }
         }
 
-        // 2. Jetpack Compose Screen Hook (Settings, TestScreen, etc.)
         if (view.javaClass.name.contains("AndroidComposeView") || view.javaClass.name.contains("ComposeView")) {
             if (hookedComposeViews.add(view)) {
                 hookComposeView(view)
             }
         }
 
-        // 3. View Groups & Lists
         if (view is ViewGroup) {
             if (view is RecyclerView && hookedRecyclerViews.add(view)) {
                 view.addOnChildAttachStateChangeListener(object : RecyclerView.OnChildAttachStateChangeListener {
@@ -514,6 +759,8 @@ object SystemFontManager {
     private fun invalidateAndRefresh() {
         rebuildTypefaceCache()
         patchSystemFontMap()
+        hookTypefaceCompatCache()
+        clearComposeCaches()
         hookedComposeViews.clear()
         mainHandler.post {
             sweepAllCurrentWindows()
