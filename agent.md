@@ -38,6 +38,7 @@ flowchart LR
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
 | **NextUp** | `NextUp` | **`1`** | AI-powered personalized movie, TV & anime recommendations using Simkl and Gemini with Open-With & CineSimkl support |
+| **System Font** | `SystemFont` | **`1`** | Forces CloudStream to adopt device's native system font instead of hardcoded Google Sans |
 
 ---
 
@@ -118,6 +119,18 @@ flowchart LR
   4. **Universal 'Open With' Resolver & CineSimkl Fix**: Direct raw SharedPreferences lookup on `rebuild_preference` avoiding Kotlinx SerializationException. Canonical URL normalization matching CineSimkl's regexes.
   5. **Ultra-Fast Parallel Batch Catalogue**: Concurrently searches Simkl for all recommendations in parallel using `Dispatchers.IO` with `awaitAll()`. Zero duplicate seen tracking across rows. Watched item filtering.
   6. **Stream Resolution**: Delegates directly to `CineSimkl` if present.
+
+---
+
+### 8. SystemFont: Native System Font Enforcer (v1)
+* **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across `AppTextViewStyle`, `AppButtonStyle`, `AppEditStyle`, and `AppMaterialButtonStyle`, ignoring user-selected device system fonts (Samsung One, OnePlus Sans, MiSans, Roboto, custom Monotype/Magisk fonts).
+* **Architecture & Multi-Layer Replacement**:
+  1. **View Tree Traverser**: Recursively scans all `TextView` and subclass elements (`Button`, `EditText`, `Chip`, `TabLayout`, etc.) across Activity and Fragment layouts.
+  2. **Typeface Resolution & Preservation**: Extracts existing `weight`, `style`, bold, and italic attributes and maps them dynamically to the selected system font (`Typeface.DEFAULT`, `SANS_SERIF`, `SERIF`, `MONOSPACE`).
+  3. **RecyclerView Dynamic Hooking**: Hooks `RecyclerView.addOnChildAttachStateChangeListener` so recycled list items on home, search, and catalogue rows are updated as they scroll into view.
+  4. **Activity & Fragment Lifecycle Callbacks**: Hooks `Application.ActivityLifecycleCallbacks` and `FragmentManager.FragmentLifecycleCallbacks` (`onFragmentViewCreated`, `onFragmentResumed`) plus `ViewTreeObserver.OnGlobalLayoutListener`.
+  5. **Guardian Daemon**: Runs periodic sweeps to catch dynamic dialogs, menus, and bottom sheets.
+  6. **Minimal Settings Dialog**: Real-time live preview, style selector, and OLED weight boost (+150).
 
 ---
 

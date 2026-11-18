@@ -24,7 +24,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Providers
-        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :NextUp:make
+        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :NextUp:make :SystemFont:make
 
       - name: Generate repo.json and plugins.json
         run: |
@@ -36,7 +36,7 @@ jobs:
             "description": "Cloudstream Plugins & Tools Repository",
             "manifestVersion": 1,
             "pluginLists": [
-              "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/plugins.json?v=1"
+              "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/plugins.json?v=2"
             ]
           }' > builds/repo.json
 
@@ -144,6 +144,19 @@ jobs:
               "authors": ["deepu2135"],
               "status": 1,
               "description": "AI-powered personalized movie, TV & anime recommendations using Simkl and Gemini with Open-With & CineSimkl support"
+            },
+            {
+              "name": "System Font",
+              "internalName": "SystemFont",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/SystemFont.cs3?v=1",
+              "tvTypes": ["Others"],
+              "language": "en",
+              "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/editor/text_fields/materialicons/48dp/2x/baseline_text_fields_white_48dp.png",
+              "apiVersion": 10,
+              "version": 1,
+              "authors": ["deepu2135"],
+              "status": 1,
+              "description": "Forces CloudStream to adopt your device'\''s native system font instead of hardcoded Google Sans across all UI elements"
             }
           ]' > builds/plugins.json
 
