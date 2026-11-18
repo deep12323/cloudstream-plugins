@@ -26,7 +26,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.lang.reflect.Field
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.Proxy
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -43,7 +46,6 @@ object SystemFontManager {
     const val STYLE_SERIF = 2
     const val STYLE_MONOSPACE = 3
 
-    // Unique tag key to ensure we NEVER re-apply or cause layout thrashing on already styled views
     private const val TAG_APPLIED_CONFIG = 0x7F0A0000 or 0x5346
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,20 +59,29 @@ object SystemFontManager {
     private val originalTypefaces = WeakHashMap<TextView, Typeface?>()
     private val hookedRecyclerViews = Collections.newSetFromMap(WeakHashMap<RecyclerView, Boolean>())
     private val hookedDecorViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val hookedComposeViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
-    // Cached pre-computed Typeface references to avoid creating new objects & causing UI flicker
     @Volatile private var cachedNormal: Typeface? = null
     @Volatile private var cachedBold: Typeface? = null
     @Volatile private var cachedItalic: Typeface? = null
     @Volatile private var cachedBoldItalic: Typeface? = null
     @Volatile private var currentConfigToken: Int = 1
 
+    // Jetpack Compose reflection caches
+    private var composeResolverClass: Class<*>? = null
+    private var composeFontFamilyClass: Class<*>? = null
+    private var composeDefaultFontFamily: Any? = null
+    private var composeSansSerifFontFamily: Any? = null
+    private var composeSerifFontFamily: Any? = null
+    private var composeMonospaceFontFamily: Any? = null
+
     fun init(context: Context) {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager with zero-flicker architecture.")
+        Log.d(TAG, "Initializing SystemFontManager.")
 
+        initComposeReflection()
         rebuildTypefaceCache()
         patchSystemFontMap()
         hookWindowManagerGlobal()
@@ -88,6 +99,7 @@ object SystemFontManager {
         guardianJob = null
         hookedRecyclerViews.clear()
         hookedDecorViews.clear()
+        hookedComposeViews.clear()
         originalTypefaces.clear()
     }
 
@@ -132,11 +144,6 @@ object SystemFontManager {
         invalidateAndRefresh()
     }
 
-    /**
-     * Pre-computes exact Typeface singleton references for Normal, Bold, Italic, and Bold-Italic.
-     * Prevents calling Typeface.create repeatedly which creates new object pointers and causes
-     * TextView.setTypeface to trigger layout thrashing and visual glitches.
-     */
     private fun rebuildTypefaceCache() {
         val base = when (getFontStyle()) {
             STYLE_SANS_SERIF -> Typeface.SANS_SERIF
@@ -148,8 +155,8 @@ object SystemFontManager {
         val boost = isWeightBoostEnabled()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val normalWeight = if (boost) 550 else 400
-            val boldWeight = if (boost) 850 else 700
+            val normalWeight = if (boost) 700 else 400
+            val boldWeight = if (boost) 900 else 700
 
             cachedNormal = Typeface.create(base, normalWeight, false)
             cachedBold = Typeface.create(base, boldWeight, false)
@@ -161,18 +168,13 @@ object SystemFontManager {
 
             cachedNormal = Typeface.create(base, normalStyle)
             cachedBold = Typeface.create(base, boldStyle)
-            cachedItalic = Typeface.create(base, Typeface.ITALIC)
+            cachedItalic = Typeface.create(base, if (boost) Typeface.BOLD_ITALIC else Typeface.ITALIC)
             cachedBoldItalic = Typeface.create(base, Typeface.BOLD_ITALIC)
         }
 
         currentConfigToken++
     }
 
-    /**
-     * Patches Android's low-level Typeface.sSystemFontMap.
-     * Maps 'google_sans' and 'google-sans' directly to the system default typeface.
-     * Any newly inflated view receives the system font directly at creation with 0ms delay!
-     */
     private fun patchSystemFontMap() {
         try {
             val sSystemFontMapField = Typeface::class.java.getDeclaredField("sSystemFontMap")
@@ -206,8 +208,103 @@ object SystemFontManager {
     }
 
     /**
-     * Resolves the target Typeface matching the view's current style from the pre-computed cache.
+     * Inspects Jetpack Compose classes via reflection to enable replacing Compose's
+     * FontFamily with the Android device's System Font.
      */
+    private fun initComposeReflection() {
+        try {
+            composeResolverClass = Class.forName("androidx.compose.ui.text.font.FontFamily\$Resolver")
+            composeFontFamilyClass = Class.forName("androidx.compose.ui.text.font.FontFamily")
+
+            val companionClass = Class.forName("androidx.compose.ui.text.font.FontFamily\$Companion")
+            val companionField = composeFontFamilyClass?.getDeclaredField("Companion")
+            companionField?.isAccessible = true
+            val companion = companionField?.get(null)
+
+            if (companion != null) {
+                composeDefaultFontFamily = companionClass.getMethod("getDefault").invoke(companion)
+                composeSansSerifFontFamily = companionClass.getMethod("getSansSerif").invoke(companion)
+                composeSerifFontFamily = companionClass.getMethod("getSerif").invoke(companion)
+                composeMonospaceFontFamily = companionClass.getMethod("getMonospace").invoke(companion)
+                Log.d(TAG, "Jetpack Compose FontFamily reflection initialized successfully.")
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Compose reflection optional fallback: ${e.message}")
+        }
+    }
+
+    private fun getComposeTargetFontFamily(): Any? {
+        return when (getFontStyle()) {
+            STYLE_SANS_SERIF -> composeSansSerifFontFamily ?: composeDefaultFontFamily
+            STYLE_SERIF -> composeSerifFontFamily ?: composeDefaultFontFamily
+            STYLE_MONOSPACE -> composeMonospaceFontFamily ?: composeDefaultFontFamily
+            else -> composeDefaultFontFamily
+        }
+    }
+
+    /**
+     * Intercepts Jetpack Compose's AndroidComposeView.fontFamilyResolver.
+     * Replaces any request for hardcoded Compose fonts with the device's System Font!
+     */
+    private fun hookComposeView(view: View) {
+        val resolverClass = composeResolverClass ?: return
+        val defaultFont = getComposeTargetFontFamily() ?: return
+
+        try {
+            var clazz: Class<*>? = view.javaClass
+            while (clazz != null && clazz != Any::class.java) {
+                for (field in clazz.declaredFields) {
+                    field.isAccessible = true
+                    val value = field.get(view) ?: continue
+
+                    if (resolverClass.isInstance(value)) {
+                        if (!Proxy.isProxyClass(value.javaClass)) {
+                            val proxy = createComposeResolverProxy(resolverClass, value, defaultFont)
+                            field.set(view, proxy)
+                            Log.d(TAG, "Hooked Compose fontFamilyResolver on field ${field.name}")
+                            view.invalidate()
+                        }
+                    } else if (field.name == "composeViewContext" || field.name.contains("context", ignoreCase = true)) {
+                        for (innerField in value.javaClass.declaredFields) {
+                            innerField.isAccessible = true
+                            val innerVal = innerField.get(value) ?: continue
+                            if (resolverClass.isInstance(innerVal) && !Proxy.isProxyClass(innerVal.javaClass)) {
+                                val proxy = createComposeResolverProxy(resolverClass, innerVal, defaultFont)
+                                innerField.set(value, proxy)
+                                Log.d(TAG, "Hooked Compose fontFamilyResolver in context ${innerField.name}")
+                                view.invalidate()
+                            }
+                        }
+                    }
+                }
+                clazz = clazz.superclass
+            }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Compose hook error: ${e.message}")
+        }
+    }
+
+    private fun createComposeResolverProxy(
+        resolverClass: Class<*>,
+        originalResolver: Any,
+        targetFontFamily: Any
+    ): Any {
+        return Proxy.newProxyInstance(
+            originalResolver.javaClass.classLoader,
+            arrayOf(resolverClass),
+            object : InvocationHandler {
+                override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
+                    if (method.name == "resolve" && args != null && args.isNotEmpty() && isEnabled()) {
+                        @Suppress("UNCHECKED_CAST")
+                        val mutableArgs = args as Array<Any?>
+                        mutableArgs[0] = targetFontFamily
+                    }
+                    return method.invoke(originalResolver, *(args ?: emptyArray()))
+                }
+            }
+        )
+    }
+
     fun resolveTargetTypeface(current: Typeface?, enabled: Boolean = isEnabled()): Typeface? {
         if (!enabled) {
             return current
@@ -347,17 +444,12 @@ object SystemFontManager {
         traverseAndApply(root, isEnabled())
     }
 
-    /**
-     * High-speed, non-thrashing view traversal.
-     * Uses TAG_APPLIED_CONFIG so views that have already been converted to the current
-     * system font are NEVER touched again, preventing layout relayouts or font glitching!
-     */
     private fun traverseAndApply(view: View, enabled: Boolean) {
+        // 1. Android View System (TextView, Button, EditText, Chip, etc.)
         if (view is TextView) {
             val currentTag = view.getTag(TAG_APPLIED_CONFIG) as? Int
 
             if (enabled) {
-                // If this view is already tagged with currentConfigToken, skip immediately!
                 if (currentTag == currentConfigToken) {
                     return
                 }
@@ -373,17 +465,35 @@ object SystemFontManager {
                     view.typeface = target
                 }
 
+                val boost = isWeightBoostEnabled()
+                if (view.paint.isFakeBoldText != boost) {
+                    view.paint.isFakeBoldText = boost
+                    view.invalidate()
+                }
+
                 view.setTag(TAG_APPLIED_CONFIG, currentConfigToken)
             } else {
                 if (currentTag != 0) {
                     if (originalTypefaces.containsKey(view)) {
                         view.typeface = originalTypefaces[view]
                     }
+                    if (view.paint.isFakeBoldText) {
+                        view.paint.isFakeBoldText = false
+                        view.invalidate()
+                    }
                     view.setTag(TAG_APPLIED_CONFIG, 0)
                 }
             }
         }
 
+        // 2. Jetpack Compose Screen Hook (Settings, TestScreen, etc.)
+        if (view.javaClass.name.contains("AndroidComposeView") || view.javaClass.name.contains("ComposeView")) {
+            if (hookedComposeViews.add(view)) {
+                hookComposeView(view)
+            }
+        }
+
+        // 3. View Groups & Lists
         if (view is ViewGroup) {
             if (view is RecyclerView && hookedRecyclerViews.add(view)) {
                 view.addOnChildAttachStateChangeListener(object : RecyclerView.OnChildAttachStateChangeListener {
@@ -404,15 +514,12 @@ object SystemFontManager {
     private fun invalidateAndRefresh() {
         rebuildTypefaceCache()
         patchSystemFontMap()
+        hookedComposeViews.clear()
         mainHandler.post {
             sweepAllCurrentWindows()
         }
     }
 
-    /**
-     * Non-intrusive background guardian checks for un-styled views every 3 seconds
-     * without triggering layout passes on already-styled views.
-     */
     private fun startGentleGuardian() {
         guardianJob?.cancel()
         guardianJob = scope.launch(Dispatchers.Default) {
