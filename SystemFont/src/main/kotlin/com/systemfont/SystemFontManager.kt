@@ -11,10 +11,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.util.LruCache
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
@@ -45,6 +43,9 @@ object SystemFontManager {
     const val STYLE_SERIF = 2
     const val STYLE_MONOSPACE = 3
 
+    // Unique tag key to ensure we NEVER re-apply or cause layout thrashing on already styled views
+    private const val TAG_APPLIED_CONFIG = 0x7F0A0000 or 0x5346
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
     private var currentActivityRef: WeakReference<Activity>? = null
@@ -57,28 +58,29 @@ object SystemFontManager {
     private val hookedRecyclerViews = Collections.newSetFromMap(WeakHashMap<RecyclerView, Boolean>())
     private val hookedDecorViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
+    // Cached pre-computed Typeface references to avoid creating new objects & causing UI flicker
+    @Volatile private var cachedNormal: Typeface? = null
+    @Volatile private var cachedBold: Typeface? = null
+    @Volatile private var cachedItalic: Typeface? = null
+    @Volatile private var cachedBoldItalic: Typeface? = null
+    @Volatile private var currentConfigToken: Int = 1
+
     fun init(context: Context) {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager. Persistence active across app restarts.")
+        Log.d(TAG, "Initializing SystemFontManager with zero-flicker architecture.")
 
-        // 1. Hook TypefaceCompat cache early so any future font inflation returns system font
-        hookTypefaceCompatCache()
-
-        // 2. Hook WindowManagerGlobal so any new window (Dialog, Activity, Popup) is intercepted instantly
+        rebuildTypefaceCache()
+        patchSystemFontMap()
         hookWindowManagerGlobal()
-
-        // 3. Register lifecycle callbacks for all activity and fragment events
         registerLifecycleCallbacks(app)
 
-        // 4. Immediately sweep all active windows and decor views on the main thread
         mainHandler.post {
             sweepAllCurrentWindows()
         }
 
-        // 5. Start persistent guardian loop to catch dynamic recycler binding & async fragments
-        startGuardianDaemon()
+        startGentleGuardian()
     }
 
     fun cleanup() {
@@ -104,13 +106,12 @@ object SystemFontManager {
     }
 
     fun isEnabled(ctx: Context? = appContext): Boolean {
-        // ALWAYS default to true so it stays active permanently across app restarts
         return getPrefs(ctx)?.getBoolean(KEY_ENABLED, true) ?: true
     }
 
     fun setEnabled(ctx: Context?, enabled: Boolean) {
         getPrefs(ctx)?.edit()?.putBoolean(KEY_ENABLED, enabled)?.commit()
-        refreshAllViews()
+        invalidateAndRefresh()
     }
 
     fun getFontStyle(ctx: Context? = appContext): Int {
@@ -119,7 +120,7 @@ object SystemFontManager {
 
     fun setFontStyle(ctx: Context?, style: Int) {
         getPrefs(ctx)?.edit()?.putInt(KEY_FONT_STYLE, style)?.commit()
-        refreshAllViews()
+        invalidateAndRefresh()
     }
 
     fun isWeightBoostEnabled(ctx: Context? = appContext): Boolean {
@@ -128,14 +129,15 @@ object SystemFontManager {
 
     fun setWeightBoostEnabled(ctx: Context?, enabled: Boolean) {
         getPrefs(ctx)?.edit()?.putBoolean(KEY_WEIGHT_BOOST, enabled)?.commit()
-        refreshAllViews()
+        invalidateAndRefresh()
     }
 
-    fun resolveTargetTypeface(current: Typeface?, enabled: Boolean = isEnabled()): Typeface? {
-        if (!enabled) {
-            return current
-        }
-
+    /**
+     * Pre-computes exact Typeface singleton references for Normal, Bold, Italic, and Bold-Italic.
+     * Prevents calling Typeface.create repeatedly which creates new object pointers and causes
+     * TextView.setTypeface to trigger layout thrashing and visual glitches.
+     */
+    private fun rebuildTypefaceCache() {
         val base = when (getFontStyle()) {
             STYLE_SANS_SERIF -> Typeface.SANS_SERIF
             STYLE_SERIF -> Typeface.SERIF
@@ -145,62 +147,92 @@ object SystemFontManager {
 
         val boost = isWeightBoostEnabled()
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && current != null) {
-            val weight = current.weight
-            val isItalic = current.isItalic
-            val finalWeight = if (boost) (weight + 150).coerceAtMost(1000) else weight
-            Typeface.create(base, finalWeight, isItalic)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val normalWeight = if (boost) 550 else 400
+            val boldWeight = if (boost) 850 else 700
+
+            cachedNormal = Typeface.create(base, normalWeight, false)
+            cachedBold = Typeface.create(base, boldWeight, false)
+            cachedItalic = Typeface.create(base, normalWeight, true)
+            cachedBoldItalic = Typeface.create(base, boldWeight, true)
         } else {
-            val style = current?.style ?: Typeface.NORMAL
-            val finalStyle = if (boost) (style or Typeface.BOLD) else style
-            Typeface.create(base, finalStyle)
+            val normalStyle = if (boost) Typeface.BOLD else Typeface.NORMAL
+            val boldStyle = Typeface.BOLD
+
+            cachedNormal = Typeface.create(base, normalStyle)
+            cachedBold = Typeface.create(base, boldStyle)
+            cachedItalic = Typeface.create(base, Typeface.ITALIC)
+            cachedBoldItalic = Typeface.create(base, Typeface.BOLD_ITALIC)
         }
+
+        currentConfigToken++
     }
 
     /**
-     * Intercepts AndroidX TypefaceCompat cache.
-     * When CloudStream requests @font/google_sans, this cache intercepts it and returns
-     * the system default typeface directly.
+     * Patches Android's low-level Typeface.sSystemFontMap.
+     * Maps 'google_sans' and 'google-sans' directly to the system default typeface.
+     * Any newly inflated view receives the system font directly at creation with 0ms delay!
      */
-    private fun hookTypefaceCompatCache() {
+    private fun patchSystemFontMap() {
         try {
-            val compatClass = Class.forName("androidx.core.graphics.TypefaceCompat")
-            val cacheField = compatClass.getDeclaredField("sTypefaceCache")
-            cacheField.isAccessible = true
+            val sSystemFontMapField = Typeface::class.java.getDeclaredField("sSystemFontMap")
+            sSystemFontMapField.isAccessible = true
 
             @Suppress("UNCHECKED_CAST")
-            val originalCache = cacheField.get(null) as? LruCache<String, Typeface>
+            val currentMap = sSystemFontMapField.get(null) as? Map<String, Typeface> ?: return
+            val newMap = HashMap(currentMap)
 
-            if (originalCache != null) {
-                val interceptingCache = object : LruCache<String, Typeface>(128) {
-                    override fun create(key: String?): Typeface? {
-                        if (isEnabled()) {
-                            val target = resolveTargetTypeface(null, true)
-                            if (target != null) return target
-                        }
-                        return null
-                    }
-                }
+            val normal = cachedNormal ?: Typeface.DEFAULT
+            val bold = cachedBold ?: Typeface.DEFAULT_BOLD
 
-                // In ART, remove final modifier if present and install interceptor
-                try {
-                    val modifiersField = Field::class.java.getDeclaredField("accessFlags")
-                    modifiersField.isAccessible = true
-                    modifiersField.setInt(cacheField, cacheField.modifiers and Modifier.FINAL.inv())
-                } catch (_: Throwable) {}
+            newMap["google_sans"] = normal
+            newMap["google-sans"] = normal
+            newMap["google_sans_medium"] = bold
+            newMap["google_sans_bold"] = bold
+            newMap["google-sans-medium"] = bold
+            newMap["google-sans-bold"] = bold
 
-                cacheField.set(null, interceptingCache)
-                Log.d(TAG, "TypefaceCompat sTypefaceCache successfully intercepted.")
-            }
+            try {
+                val modifiersField = Field::class.java.getDeclaredField("accessFlags")
+                modifiersField.isAccessible = true
+                modifiersField.setInt(sSystemFontMapField, sSystemFontMapField.modifiers and Modifier.FINAL.inv())
+            } catch (_: Throwable) {}
+
+            sSystemFontMapField.set(null, Collections.unmodifiableMap(newMap))
+            Log.d(TAG, "Typeface.sSystemFontMap successfully patched.")
         } catch (e: Throwable) {
-            Log.d(TAG, "TypefaceCompat hook non-critical fallback: ${e.message}")
+            Log.d(TAG, "Typeface.sSystemFontMap patch fallback: ${e.message}")
         }
     }
 
     /**
-     * Replaces WindowManagerGlobal.mViews with an observable list so any new window
-     * (Dialog, Sheet, Activity, Popup) is styled with the system font immediately upon creation.
+     * Resolves the target Typeface matching the view's current style from the pre-computed cache.
      */
+    fun resolveTargetTypeface(current: Typeface?, enabled: Boolean = isEnabled()): Typeface? {
+        if (!enabled) {
+            return current
+        }
+
+        val isBold = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && current != null) {
+            current.weight >= 600 || current.isBold
+        } else {
+            (current?.style ?: 0) and Typeface.BOLD != 0
+        }
+
+        val isItalic = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && current != null) {
+            current.isItalic
+        } else {
+            (current?.style ?: 0) and Typeface.ITALIC != 0
+        }
+
+        return when {
+            isBold && isItalic -> cachedBoldItalic
+            isBold -> cachedBold
+            isItalic -> cachedItalic
+            else -> cachedNormal
+        }
+    }
+
     private fun hookWindowManagerGlobal() {
         if (isWmgHooked) return
         try {
@@ -218,7 +250,6 @@ object SystemFontManager {
                 override fun add(element: View): Boolean {
                     val result = super.add(element)
                     mainHandler.post {
-                        hookDecorView(element)
                         applyToViewTree(element)
                     }
                     return result
@@ -227,7 +258,6 @@ object SystemFontManager {
                 override fun add(index: Int, element: View) {
                     super.add(index, element)
                     mainHandler.post {
-                        hookDecorView(element)
                         applyToViewTree(element)
                     }
                 }
@@ -235,10 +265,7 @@ object SystemFontManager {
 
             mViewsField.set(wmg, customViewsList)
             isWmgHooked = true
-            Log.d(TAG, "WindowManagerGlobal.mViews successfully hooked.")
-        } catch (e: Throwable) {
-            Log.d(TAG, "WindowManagerGlobal hook non-critical: ${e.message}")
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun registerLifecycleCallbacks(app: Application?) {
@@ -257,7 +284,6 @@ object SystemFontManager {
 
                 override fun onActivityResumed(activity: Activity) {
                     currentActivityRef = WeakReference(activity)
-                    hookDecorView(activity.window.decorView)
                     applyToViewTree(activity.window.decorView)
                 }
 
@@ -271,10 +297,7 @@ object SystemFontManager {
                 }
             })
             isLifecycleRegistered = true
-            Log.d(TAG, "ActivityLifecycleCallbacks registered successfully.")
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to register ActivityLifecycleCallbacks", e)
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun hookFragmentActivity(activity: Activity) {
@@ -299,26 +322,6 @@ object SystemFontManager {
         }
     }
 
-    private fun hookDecorView(decorView: View) {
-        if (!hookedDecorViews.add(decorView)) return
-
-        decorView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
-            private var lastApplyTime = 0L
-
-            override fun onGlobalLayout() {
-                val now = System.currentTimeMillis()
-                if (now - lastApplyTime > 300) {
-                    lastApplyTime = now
-                    applyToViewTree(decorView)
-                }
-            }
-        })
-    }
-
-    /**
-     * Fetches all active root views across the entire app process via WindowManagerGlobal
-     * and applies the system font immediately.
-     */
     fun sweepAllCurrentWindows() {
         try {
             val wmgClass = Class.forName("android.view.WindowManagerGlobal")
@@ -330,41 +333,53 @@ object SystemFontManager {
             @Suppress("UNCHECKED_CAST")
             val views = (mViewsField.get(wmg) as? List<View>)?.toList() ?: emptyList()
             for (v in views) {
-                hookDecorView(v)
                 applyToViewTree(v)
             }
         } catch (_: Throwable) {}
 
         currentActivityRef?.get()?.let {
-            hookDecorView(it.window.decorView)
             applyToViewTree(it.window.decorView)
         }
     }
 
     fun applyToViewTree(root: View?) {
         if (root == null) return
-        val enabled = isEnabled()
-
-        traverseAndApply(root, enabled)
+        traverseAndApply(root, isEnabled())
     }
 
+    /**
+     * High-speed, non-thrashing view traversal.
+     * Uses TAG_APPLIED_CONFIG so views that have already been converted to the current
+     * system font are NEVER touched again, preventing layout relayouts or font glitching!
+     */
     private fun traverseAndApply(view: View, enabled: Boolean) {
         if (view is TextView) {
+            val currentTag = view.getTag(TAG_APPLIED_CONFIG) as? Int
+
             if (enabled) {
+                // If this view is already tagged with currentConfigToken, skip immediately!
+                if (currentTag == currentConfigToken) {
+                    return
+                }
+
                 if (!originalTypefaces.containsKey(view)) {
                     originalTypefaces[view] = view.typeface
                 }
+
                 val original = originalTypefaces[view]
                 val target = resolveTargetTypeface(original, true)
-                if (view.typeface != target && target != null) {
+
+                if (target != null && view.typeface !== target) {
                     view.typeface = target
                 }
+
+                view.setTag(TAG_APPLIED_CONFIG, currentConfigToken)
             } else {
-                if (originalTypefaces.containsKey(view)) {
-                    val original = originalTypefaces[view]
-                    if (view.typeface != original) {
-                        view.typeface = original
+                if (currentTag != 0) {
+                    if (originalTypefaces.containsKey(view)) {
+                        view.typeface = originalTypefaces[view]
                     }
+                    view.setTag(TAG_APPLIED_CONFIG, 0)
                 }
             }
         }
@@ -386,22 +401,23 @@ object SystemFontManager {
         }
     }
 
-    fun refreshAllViews() {
+    private fun invalidateAndRefresh() {
+        rebuildTypefaceCache()
+        patchSystemFontMap()
         mainHandler.post {
             sweepAllCurrentWindows()
         }
     }
 
     /**
-     * Background guardian daemon runs every 1 second while CloudStream is active.
-     * Ensures any new views, cards, or lists loaded dynamically from network or cache
-     * always adopt the system font without resetting.
+     * Non-intrusive background guardian checks for un-styled views every 3 seconds
+     * without triggering layout passes on already-styled views.
      */
-    private fun startGuardianDaemon() {
+    private fun startGentleGuardian() {
         guardianJob?.cancel()
         guardianJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(1200)
+                delay(3000)
                 if (isEnabled()) {
                     mainHandler.post {
                         sweepAllCurrentWindows()
