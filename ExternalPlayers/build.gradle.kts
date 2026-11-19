@@ -6,10 +6,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
 }
 
-version = 3
+version = 4
 
 cloudstream {
-    description = "External player integrations: MPV Infinity, mpvEx, 1DM, and custom external players manager"
+    description = "External video players integration"
     authors = listOf("deepu2135")
     status = 1
     tvTypes = listOf("Others")

@@ -31,7 +31,7 @@ flowchart LR
 | Plugin Name | Internal ID | Version | Description |
 |---|---|---|---|
 | **TorrServe** | `TorrServe` | `6` | BitTorrent engine with 40+ Tier-1 trackers & memory tuner |
-| **External Players** | `ExternalPlayers` | **`3`** | MPV Infinity, mpvEx, 1DM & customizable manual/detected external player manager |
+| **External Players** | `ExternalPlayers` | **`4`** | External video players integration |
 | **Skip Torrent Warning**| `SkipTorrentWarning` | `3` | Bypasses torrent confirmation dialog & displays live stats |
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |

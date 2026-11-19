@@ -55,17 +55,17 @@ jobs:
               "description": "TorrServer BitTorrent streaming engine with active keep-alive, 40+ high-speed trackers, buffer tuner & seeding controls"
             },
             {
-              "name": "External Players (MPV Infinity, mpvEx, 1DM & Custom)",
+              "name": "External Players",
               "internalName": "ExternalPlayers",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/ExternalPlayers.cs3?v=3",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/ExternalPlayers.cs3?v=4",
               "tvTypes": ["Others"],
               "language": "en",
               "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/av/play_circle_filled/materialicons/48dp/2x/baseline_play_circle_filled_white_48dp.png",
               "apiVersion": 10,
-              "version": 3,
+              "version": 4,
               "authors": ["deepu2135"],
               "status": 1,
-              "description": "External player integrations: MPV Infinity, mpvEx, 1DM, and custom external players manager with manual package & activity configuration"
+              "description": "External video players integration"
             },
             {
               "name": "Skip Torrent Warning",
