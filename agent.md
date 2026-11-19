@@ -2,14 +2,14 @@ always update this agent.md file after making changes in any extension
 # Development Progress & Engineering Log
 
 ## 📌 Overview
-This document tracks the end-to-end debugging, feature additions, CI/CD pipeline, architecture notes, and UI adjustments performed across the `cloudstream-plugins` repository, including **TorrServe**, **ExternalPlayers**, **SkipTorrentWarning**, **PopupBlocker**, **H2RxDMovies**, **MoviesDrive**, **AllInOneLiveTV**, and **NextUp**.
+This document tracks the end-to-end debugging, feature additions, CI/CD pipeline, architecture notes, and UI adjustments performed across the `cloudstream-plugins` repository, including **TorrServe**, **ExternalPlayers**, **SkipTorrentWarning**, **PopupBlocker**, **H2RxDMovies**, **MoviesDrive**, **AllInOneLiveTV**, and **SystemFont**.
 
 ---
 
 ## 🏗️ Architecture & Deployment Flow
 
 CloudStream extensions are distributed via Git branches:
-1. **`master` branch**: Source code for all providers (`TorrServe`, `ExternalPlayers`, `SkipTorrentWarning`, `PopupBlocker`, `H2RxDMovies`, `AllInOneLiveTV`, `MoviesDrive`, `NextUp`).
+1. **`master` branch**: Source code for all providers (`TorrServe`, `ExternalPlayers`, `SkipTorrentWarning`, `PopupBlocker`, `H2RxDMovies`, `AllInOneLiveTV`, `MoviesDrive`, `SystemFont`).
 2. **`builds` branch**: Distribution branch containing compiled `.cs3` Dex binaries, `plugins.json`, and `repo.json`.
 3. **Local Storage / Sideloading**: Direct `.cs3` files can also be copied directly to `/storage/emulated/0/Cloudstream3/plugins/` for instantaneous on-device testing.
 4. **CloudStream Client**: Fetches `https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/repo.json`, which points to `plugins.json?v=XX`.
@@ -37,7 +37,6 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **NextUp** | `NextUp` | **`1`** | AI-powered personalized movie, TV & anime recommendations using Simkl and Gemini with Open-With & CineSimkl support |
 | **System Font** | `SystemFont` | **`1`** | Forces CloudStream to adopt device's native system font instead of hardcoded Google Sans |
 
 ---
@@ -109,20 +108,7 @@ flowchart LR
 
 ---
 
-### 7. NextUp: AI-Powered Recommendation Engine & 'Open With' Resolver (v1)
-* **Overview**:
-  `NextUp` is an AI curation and discovery extension that analyzes the user's local CloudStream bookmarks/favorites and Simkl watch ratings, generates hyper-personalized recommendations via Google Gemini, and resolves content opening through CloudStream's **"Open with"** ecosystem.
-* **Key Components**:
-  1. **Simkl Meta-Engine**: Zero TMDB dependencies. Uses Simkl IDs, WebP posters (`simkl.in/posters/`), high-res backdrops (`simkl.in/fanart/`), official Simkl community ratings, and full episode listings.
-  2. **Gemini AI Recommendation Engine**: Supports `gemini-1.5-flash`, `gemini-2.0-flash`, `gemini-1.5-pro` or custom tuned models (`tunedModels/<your-id>`). High freshness with dynamic seeds, recent titles memory, and pull-to-refresh triggers.
-  3. **1-Tap Training Exporter**: Generates `.jsonl` fine-tuning datasets from 100% of user Simkl items + local library bookmarks for Google AI Studio model tuning.
-  4. **Universal 'Open With' Resolver & CineSimkl Fix**: Direct raw SharedPreferences lookup on `rebuild_preference` avoiding Kotlinx SerializationException. Canonical URL normalization matching CineSimkl's regexes.
-  5. **Ultra-Fast Parallel Batch Catalogue**: Concurrently searches Simkl for all recommendations in parallel using `Dispatchers.IO` with `awaitAll()`. Zero duplicate seen tracking across rows. Watched item filtering.
-  6. **Stream Resolution**: Delegates directly to `CineSimkl` if present.
-
----
-
-### 8. SystemFont: Native System Font Enforcer (v1)
+### 7. SystemFont: Native System Font Enforcer (v1)
 * **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across `AppTextViewStyle`, `AppButtonStyle`, `AppEditStyle`, and `AppMaterialButtonStyle`, ignoring user-selected device system fonts (Samsung One, OnePlus Sans, MiSans, Roboto, custom Monotype/Magisk fonts).
 * **Architecture & Multi-Layer Replacement**:
   1. **View Tree Traverser**: Recursively scans all `TextView` and subclass elements (`Button`, `EditText`, `Chip`, `TabLayout`, etc.) across Activity and Fragment layouts.

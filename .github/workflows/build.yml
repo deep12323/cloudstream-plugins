@@ -24,7 +24,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Providers
-        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :NextUp:make :SystemFont:make
+        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :SystemFont:make
 
       - name: Generate repo.json and plugins.json
         run: |
@@ -131,19 +131,6 @@ jobs:
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream movies & TV series from MoviesDrive with customizable category catalogue & HubCloud extraction"
-            },
-            {
-              "name": "NextUp",
-              "internalName": "NextUp",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/NextUp.cs3?v=1",
-              "tvTypes": ["Movie", "TvSeries", "Anime"],
-              "language": "en",
-              "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/recommend/materialicons/48dp/2x/baseline_recommend_white_48dp.png",
-              "apiVersion": 10,
-              "version": 1,
-              "authors": ["deepu2135"],
-              "status": 1,
-              "description": "AI-powered personalized movie, TV & anime recommendations using Simkl and Gemini with Open-With & CineSimkl support"
             },
             {
               "name": "System Font",

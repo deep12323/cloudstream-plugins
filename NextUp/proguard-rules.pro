@@ -1,2 +1,0 @@
--keep class com.nextup.ai.** { *; }
--keepclassmembers class com.nextup.ai.** { *; }
