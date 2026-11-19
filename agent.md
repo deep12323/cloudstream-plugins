@@ -37,7 +37,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`12`** | Pre-Inflation Shield (LayoutInflater.Factory2), PreDraw Gate & Compose Multiplatform Zero-Glitch Engine |
+| **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
 
@@ -154,6 +154,18 @@ flowchart LR
      * Attached across all decor views and ViewGroups, instantly intercepting dynamically attached child views and `AndroidComposeView` instances at the moment of attachment.
   4. **Pre-Composition Compose Injection**:
      * Hooks `AndroidComposeView.fontFamilyResolver` State before the first composition pass runs, preventing Compose from ever rendering an initial frame with Product Sans or triggering recomposition passes.
+
+---
+
+### 9. SystemFont: Opaque BottomSheet & Native Dialog Preservation (v13)
+* **Problem**: After v12, users reported that while the font changing glitch was completely fixed, opening the homepage provider selector (`HomeFragment.selectHomepage`) caused the bottom sheet dialog to render completely transparent, with the provider list floating directly on top of the movie posters.
+* **Root Cause**:
+  1. In v12, `attachHierarchyListener` called `group.setOnHierarchyChangeListener` on every ViewGroup, including `CoordinatorLayout` and `design_bottom_sheet`. This overwrote `CoordinatorLayout.HierarchyChangeListener`, which is responsible for initializing `BottomSheetBehavior` and applying the bottom sheet's opaque `MaterialShapeDrawable` background.
+  2. `tryFallbackCreateView` in `ZeroGlitchLayoutFactory` intercepted container creation using the Activity's context rather than letting `LayoutInflater` inflate views with the dialog's `ContextThemeWrapper` (`AppBottomSheetDialogTheme`).
+* **Solutions in v13**:
+  1. **Removed `setOnHierarchyChangeListener` Hijacking**: Completely eliminated ViewGroup hierarchy listener replacement, preserving `CoordinatorLayout` and `BottomSheetBehavior` internal lifecycles and background shape drawables intact.
+  2. **Pure `Factory2` Delegation**: `ZeroGlitchLayoutFactory` now only intercepts `TextView` instances and returns `null` for all layout containers and dialog frames, allowing Android's `LayoutInflater` to natively resolve dialog themes, background drawables, and corner elevations with 100% opacity.
+  3. **Retained Frame-0 Font Shield**: All `TextView`, `Button`, and `EditText` instances in both the main window and bottom sheet dialogs continue to be intercepted at creation, maintaining zero font jumps.
 
 ---
 

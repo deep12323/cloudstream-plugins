@@ -135,12 +135,12 @@ jobs:
             {
               "name": "System Font",
               "internalName": "SystemFont",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/SystemFont.cs3?v=12",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/SystemFont.cs3?v=13",
               "tvTypes": ["Others"],
               "language": "en",
               "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/editor/text_fields/materialicons/48dp/2x/baseline_text_fields_white_48dp.png",
-              "apiVersion": 12,
-              "version": 12,
+              "apiVersion": 13,
+              "version": 13,
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Forces CloudStream to adopt your device'\''s native system font instead of hardcoded Google Sans across all UI elements"

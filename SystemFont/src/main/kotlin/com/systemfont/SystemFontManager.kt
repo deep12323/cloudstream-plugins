@@ -39,19 +39,17 @@ import java.util.Collections
 import java.util.WeakHashMap
 
 /**
- * SystemFontManager v12 - Ultimate Zero-Glitch System Font Engine
+ * SystemFontManager v13 - Zero-Glitch Engine with Native Dialog & BottomSheet Preservation
  *
- * Eliminates all visual font transitions and flickers by intercepting views at the
- * exact point of creation and pre-draw:
- * 1. Pre-Inflation Shield (LayoutInflater.Factory2): Injects target typeface immediately
- *    during XML view creation, before views are added to the hierarchy, measured, or drawn.
- * 2. Pre-Draw Gate (OnPreDrawListener): Intercepts the window right before the GPU draws
- *    the display buffer, guaranteeing that frame 0 is rendered with the system font.
- * 3. Immediate Hierarchy Attachment (OnHierarchyChangeListener): Catches dynamic child views
- *    and ComposeView / AndroidComposeView instances the microsecond they are attached.
- * 4. Deep Compose Multiplatform Resolver Proxy: Injects zero-latency resolver proxy into
- *    AndroidComposeView.fontFamilyResolver before the first composition pass.
- * 5. TypefaceCompat & Native System Font Map Hooks: Fallback anchors for any legacy requests.
+ * 1. Pre-Inflation Shield (LayoutInflater.Factory2):
+ *    Intercepts XML view creation and immediately injects the system font (MiSans)
+ *    into all TextViews/Buttons/EditTexts before they are added or drawn on screen.
+ *    Passes container and dialog tags directly to LayoutInflater so BottomSheetDialog,
+ *    CoordinatorLayout, themes, and backgrounds remain 100% intact and opaque!
+ * 2. PreDraw Gate (OnPreDrawListener):
+ *    Ensures frame 0 renders with the system font without touching ViewGroup hierarchy listeners.
+ * 3. Deep Jetpack Compose Multiplatform Resolver Proxy:
+ *    Hooks AndroidComposeView.fontFamilyResolver with zero latency.
  */
 object SystemFontManager {
 
@@ -78,7 +76,6 @@ object SystemFontManager {
     private val hookedComposeViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
     private val attachedLayoutViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
     private val hookedInflaters = Collections.newSetFromMap(WeakHashMap<LayoutInflater, Boolean>())
-    private val hookedHierarchyContainers = Collections.newSetFromMap(WeakHashMap<ViewGroup, Boolean>())
 
     // Cached pre-computed Typeface references
     @Volatile private var cachedNormal: Typeface? = null
@@ -86,26 +83,21 @@ object SystemFontManager {
     @Volatile private var cachedItalic: Typeface? = null
     @Volatile private var cachedBoldItalic: Typeface? = null
 
-    // Reference to Compose interceptor cache to allow instant invalidation on settings change
+    // Reference to Compose interceptor cache
     @Volatile private var activeComposeLruCache: LruCache<Any, Any>? = null
 
-    // Cached reflection references for zero-overhead font resolution
+    // Cached reflection references
     @Volatile private var immutableConstructor: Constructor<*>? = null
     @Volatile private var fontFamilyClass: Class<*>? = null
     @Volatile private var resolverInterfaceClass: Class<*>? = null
     @Volatile private var interceptorInterfaceClass: Class<*>? = null
     @Volatile private var platformResolveInterceptorProxy: Any? = null
 
-    // Cached fields on TypefaceRequest to avoid repeated reflective scans
+    // Cached fields on TypefaceRequest
     @Volatile private var trWeightField: Field? = null
     @Volatile private var trStyleField: Field? = null
     @Volatile private var trReflectionInitialized = false
 
-    /**
-     * Intercepting LruCache that replaces TypefaceCompat.sTypefaceCache.
-     * Whenever AndroidX or AppCompat requests @font/google_sans or any other font,
-     * this cache intercepts the query and IMMEDIATELY returns the System Font.
-     */
     private class FontInterceptorLruCache(maxSize: Int) : LruCache<String, Typeface>(maxSize) {
         override fun create(key: String): Typeface? {
             if (!isEnabled()) return null
@@ -126,10 +118,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Deep Compose Interceptor LruCache replacing GlobalTypefaceRequestCache.resultCache.
-     * Evaluates TypefaceRequests in 0ms, returning pre-computed Immutable TypefaceResults.
-     */
     private class ComposeFontInterceptorLruCache(maxSize: Int) : LruCache<Any, Any>(maxSize) {
         override fun create(key: Any): Any? {
             if (!isEnabled()) return null
@@ -141,7 +129,7 @@ object SystemFontManager {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager v12 with Pre-Inflation Shield and Zero-Glitch Engine.")
+        Log.d(TAG, "Initializing SystemFontManager v13 with Safe Pre-Inflation Shield and Opaque BottomSheet Protection.")
 
         try {
             rebuildTypefaceCache()
@@ -182,7 +170,6 @@ object SystemFontManager {
         hookedComposeViews.clear()
         attachedLayoutViews.clear()
         hookedInflaters.clear()
-        hookedHierarchyContainers.clear()
         originalTypefaces.clear()
     }
 
@@ -235,9 +222,6 @@ object SystemFontManager {
         invalidateAndRefresh()
     }
 
-    /**
-     * Pre-computes exact Typeface singleton references for Normal, Bold, Italic, and Bold-Italic.
-     */
     private fun rebuildTypefaceCache() {
         val base = when (getFontStyle()) {
             STYLE_SANS_SERIF -> Typeface.SANS_SERIF
@@ -267,9 +251,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Initializes reflection handles for Compose text classes once.
-     */
     private fun initComposeReflection() {
         val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
         try {
@@ -317,9 +298,6 @@ object SystemFontManager {
         buildPlatformResolveInterceptorProxy()
     }
 
-    /**
-     * Builds our dynamic proxy implementing Compose's PlatformResolveInterceptor.
-     */
     private fun buildPlatformResolveInterceptorProxy() {
         val iface = interceptorInterfaceClass ?: return
         try {
@@ -333,9 +311,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Resolves the target Compose FontFamily instance based on current user preference.
-     */
     private fun getTargetComposeFontFamily(): Any? {
         val ffc = fontFamilyClass ?: return null
         return try {
@@ -363,9 +338,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * InvocationHandler for PlatformResolveInterceptor proxy.
-     */
     private class ZeroGlitchPlatformResolveInterceptorInvocationHandler : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
             val name = method.name
@@ -419,9 +391,6 @@ object SystemFontManager {
         return weightObj
     }
 
-    /**
-     * Sets PlatformResolveInterceptor.Companion.Default to our interceptor proxy.
-     */
     private fun hookPlatformResolveInterceptorDefault() {
         val proxy = platformResolveInterceptorProxy ?: return
         try {
@@ -445,9 +414,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Patches the internal platformResolveInterceptor field inside a FontFamilyResolverImpl instance.
-     */
     private fun patchPlatformResolveInterceptor(resolverInstance: Any) {
         val proxy = platformResolveInterceptorProxy ?: return
         try {
@@ -461,9 +427,6 @@ object SystemFontManager {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Engine 1 (Compose): Intercepts Jetpack Compose Multiplatform font resolution.
-     */
     private fun hookComposeTypefaceCache() {
         try {
             val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
@@ -489,9 +452,7 @@ object SystemFontManager {
                     resultCacheField.set(globalCache, interceptor)
                     activeComposeLruCache = interceptor
                     Log.d(TAG, "Compose GlobalTypefaceRequestCache successfully intercepted!")
-                } catch (_: Throwable) {
-                    // Internal type mismatch on some Compose Multiplatform builds, handled gracefully
-                }
+                } catch (_: Throwable) {}
             } else {
                 activeComposeLruCache = currentLru
             }
@@ -525,9 +486,6 @@ object SystemFontManager {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Directly injects our zero-glitch FontFamily.Resolver dynamic proxy into an AndroidComposeView.
-     */
     fun hookAndroidComposeView(view: View) {
         if (!view.javaClass.name.contains("AndroidComposeView")) return
         try {
@@ -565,9 +523,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Dynamic proxy InvocationHandler for FontFamily.Resolver.
-     */
     private class ZeroGlitchFontResolverInvocationHandler(
         private val delegate: Any
     ) : InvocationHandler {
@@ -770,13 +725,15 @@ object SystemFontManager {
     }
 
     // =========================================================================
-    // PILLAR 1: PRE-INFLATION SHIELD (LayoutInflater.Factory2 Interceptor)
+    // SAFE PRE-INFLATION SHIELD (LayoutInflater.Factory2 Interceptor)
     // =========================================================================
 
     /**
      * Hooks an Activity's LayoutInflater with our ZeroGlitchLayoutFactory.
      * Intercepts views at the exact microsecond they are inflated from XML,
-     * setting the system font BEFORE they are added to parents, measured, or drawn!
+     * setting the system font BEFORE they are added to parents, measured, or drawn.
+     * Crucially: Delegates all non-text containers to Android/AppCompat so themes,
+     * dialog styles, and BottomSheet backgrounds remain 100% intact!
      */
     fun hookActivityLayoutInflater(activity: Activity) {
         try {
@@ -799,7 +756,7 @@ object SystemFontManager {
             mFactorySetField.setBoolean(inflater, false)
         } catch (_: Throwable) {}
 
-        val customFactory = ZeroGlitchLayoutFactory(originalFactory2, inflater)
+        val customFactory = ZeroGlitchLayoutFactory(originalFactory2)
         try {
             inflater.factory2 = customFactory
             Log.d(TAG, "ZeroGlitchLayoutFactory successfully hooked into LayoutInflater!")
@@ -813,16 +770,15 @@ object SystemFontManager {
     }
 
     /**
-     * Intercepts view creation during XML layout inflation in 0ms.
+     * Pure, transparent Factory2 wrapper that ONLY intercepts TextViews and leaves all
+     * containers, dialogs, and BottomSheets to Android's native theme resolver.
      */
     private class ZeroGlitchLayoutFactory(
-        private val delegate: LayoutInflater.Factory2?,
-        private val inflater: LayoutInflater
+        private val delegate: LayoutInflater.Factory2?
     ) : LayoutInflater.Factory2 {
 
         override fun onCreateView(parent: View?, name: String, context: Context, attrs: AttributeSet): View? {
             val view = delegate?.onCreateView(parent, name, context, attrs)
-                ?: tryFallbackCreateView(name, context, attrs)
             if (view != null) {
                 applyFontInstantly(view)
             }
@@ -831,33 +787,14 @@ object SystemFontManager {
 
         override fun onCreateView(name: String, context: Context, attrs: AttributeSet): View? {
             val view = delegate?.onCreateView(name, context, attrs)
-                ?: tryFallbackCreateView(name, context, attrs)
             if (view != null) {
                 applyFontInstantly(view)
             }
             return view
         }
 
-        private fun tryFallbackCreateView(name: String, context: Context, attrs: AttributeSet): View? {
-            return try {
-                if (-1 == name.indexOf('.')) {
-                    when (name) {
-                        "TextView", "Button", "EditText", "AutoCompleteTextView",
-                        "MultiAutoCompleteTextView", "CheckBox", "RadioButton",
-                        "ToggleButton", "CheckedTextView" -> inflater.createView(name, "android.widget.", attrs)
-                        else -> null
-                    }
-                } else {
-                    inflater.createView(name, null, attrs)
-                }
-            } catch (_: Throwable) {
-                null
-            }
-        }
-
         private fun applyFontInstantly(view: View) {
             if (!isEnabled()) return
-
             if (view is TextView) {
                 val current = view.typeface
                 val target = resolveTargetTypeface(current, true)
@@ -868,63 +805,17 @@ object SystemFontManager {
                     view.typeface = target
                 }
             }
-
-            if (view is ViewGroup) {
-                attachHierarchyListener(view)
-            }
         }
     }
 
     // =========================================================================
-    // PILLAR 2: IMMEDIATE HIERARCHY INTERCEPTION (OnHierarchyChangeListener)
-    // =========================================================================
-
-    /**
-     * Attaches an OnHierarchyChangeListener to a ViewGroup so any newly attached child
-     * view (including RecyclerView items and ComposeView) is intercepted immediately.
-     */
-    fun attachHierarchyListener(group: ViewGroup) {
-        if (!hookedHierarchyContainers.add(group)) return
-
-        try {
-            group.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
-                override fun onChildViewAdded(parent: View?, child: View?) {
-                    if (child == null || !isEnabled()) return
-
-                    if (child is TextView) {
-                        val current = child.typeface
-                        val target = resolveTargetTypeface(current, true)
-                        if (target != null && current !== target) {
-                            if (!originalTypefaces.containsKey(child)) {
-                                originalTypefaces[child] = current
-                            }
-                            child.typeface = target
-                        }
-                    }
-
-                    if (child.javaClass.name.contains("AndroidComposeView")) {
-                        hookAndroidComposeView(child)
-                    }
-
-                    if (child is ViewGroup) {
-                        attachHierarchyListener(child)
-                        traverseAndApply(child, isEnabled())
-                    }
-                }
-
-                override fun onChildViewRemoved(parent: View?, child: View?) {}
-            })
-        } catch (_: Throwable) {}
-    }
-
-    // =========================================================================
-    // PILLAR 3: PRE-DRAW GATE (OnPreDrawListener)
+    // PRE-DRAW GATE (OnPreDrawListener)
     // =========================================================================
 
     /**
      * Attaches continuous PreDraw and Layout observers to the Window's DecorView.
-     * OnPreDrawListener executes immediately before GPU rendering, guaranteeing that
-     * no frame can ever be drawn with the old font!
+     * Executes immediately before GPU rendering, guaranteeing that no frame can
+     * ever be drawn with Google Sans while preserving 100% of ViewGroup listeners.
      */
     private fun attachContinuousLayoutObserver(view: View) {
         if (!attachedLayoutViews.add(view)) return
@@ -934,7 +825,6 @@ object SystemFontManager {
 
             val viewRef = WeakReference(view)
 
-            // 1. PreDraw Gate: Guarantees frame 0 rendering
             vto.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
                 override fun onPreDraw(): Boolean {
                     val root = viewRef.get()
@@ -946,7 +836,6 @@ object SystemFontManager {
                 }
             })
 
-            // 2. Global Layout Observer: Backstop for subsequent layout passes
             vto.addOnGlobalLayoutListener {
                 val root = viewRef.get()
                 if (root != null) {
@@ -957,9 +846,6 @@ object SystemFontManager {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Engine 2 (Android Views): Intercepts AndroidX TypefaceCompat.sTypefaceCache.
-     */
     private fun hookTypefaceCompatCache() {
         try {
             val compatClass = Class.forName("androidx.core.graphics.TypefaceCompat")
@@ -986,9 +872,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Proactively pre-populates all known CloudStream font keys across styles and cookies.
-     */
     private fun prefillCache(cacheObj: Any) {
         try {
             val putMethod = cacheObj.javaClass.getMethod("put", Any::class.java, Any::class.java)
@@ -1042,9 +925,6 @@ object SystemFontManager {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Maps hardcoded font family names to the target system font in Android's native font table.
-     */
     private fun patchSystemFontMap() {
         try {
             val sSystemFontMapField = Typeface::class.java.getDeclaredField("sSystemFontMap")
@@ -1113,9 +993,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Resolves the target Typeface matching the view's current style from the pre-computed cache.
-     */
     fun resolveTargetTypeface(current: Typeface?, enabled: Boolean = isEnabled()): Typeface? {
         if (!enabled) {
             return current
@@ -1141,9 +1018,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Lifecycle enforcer hooking activities, fragments, and layout inflaters continuously.
-     */
     private fun registerLifecycleCallbacks(app: Application?) {
         if (app == null || isLifecycleRegistered) return
 
@@ -1155,7 +1029,6 @@ object SystemFontManager {
                     hookFragmentActivity(activity)
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
-                            if (decor is ViewGroup) attachHierarchyListener(decor)
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
@@ -1168,7 +1041,6 @@ object SystemFontManager {
                     hookActivityLayoutInflater(activity)
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
-                            if (decor is ViewGroup) attachHierarchyListener(decor)
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
@@ -1181,7 +1053,6 @@ object SystemFontManager {
                     hookActivityLayoutInflater(activity)
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
-                            if (decor is ViewGroup) attachHierarchyListener(decor)
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
@@ -1212,7 +1083,6 @@ object SystemFontManager {
                         v: View,
                         savedInstanceState: Bundle?
                     ) {
-                        if (v is ViewGroup) attachHierarchyListener(v)
                         applyToViewTree(v)
                         attachContinuousLayoutObserver(v)
                         sweepAllComposeViews()
@@ -1220,7 +1090,6 @@ object SystemFontManager {
 
                     override fun onFragmentStarted(fm: FragmentManager, f: Fragment) {
                         f.view?.let {
-                            if (it is ViewGroup) attachHierarchyListener(it)
                             applyToViewTree(it)
                             attachContinuousLayoutObserver(it)
                             sweepAllComposeViews()
@@ -1229,7 +1098,6 @@ object SystemFontManager {
 
                     override fun onFragmentResumed(fm: FragmentManager, f: Fragment) {
                         f.view?.let {
-                            if (it is ViewGroup) attachHierarchyListener(it)
                             applyToViewTree(it)
                             attachContinuousLayoutObserver(it)
                             sweepAllComposeViews()
@@ -1257,7 +1125,6 @@ object SystemFontManager {
             @Suppress("UNCHECKED_CAST")
             val views = (mViewsField.get(wmg) as? List<View>)?.toList() ?: emptyList()
             for (v in views) {
-                if (v is ViewGroup) attachHierarchyListener(v)
                 applyToViewTree(v)
                 attachContinuousLayoutObserver(v)
             }
@@ -1266,7 +1133,6 @@ object SystemFontManager {
         findCurrentActivity()?.let { act ->
             hookActivityLayoutInflater(act)
             act.window?.decorView?.let { decor ->
-                if (decor is ViewGroup) attachHierarchyListener(decor)
                 applyToViewTree(decor)
                 attachContinuousLayoutObserver(decor)
             }
@@ -1316,8 +1182,6 @@ object SystemFontManager {
         }
 
         if (view is ViewGroup) {
-            attachHierarchyListener(view)
-
             if (view is RecyclerView && hookedRecyclerViews.add(view)) {
                 view.addOnChildAttachStateChangeListener(object : RecyclerView.OnChildAttachStateChangeListener {
                     override fun onChildViewAttachedToWindow(child: View) {
@@ -1350,9 +1214,6 @@ object SystemFontManager {
         }
     }
 
-    /**
-     * Gentle background guardian runs as a backstop.
-     */
     private fun startGentleGuardian() {
         guardianJob?.cancel()
         guardianJob = scope.launch(Dispatchers.Default) {

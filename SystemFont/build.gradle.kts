@@ -7,7 +7,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
 }
 
-version = 12
+version = 13
 
 cloudstream {
     description = "Forces CloudStream to adopt your device's native system font instead of hardcoded Google Sans across all UI elements"
