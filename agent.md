@@ -37,7 +37,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`7`** | Forces CloudStream to adopt device's native system font with zero-glitch inflation cache interception & early lifecycle enforcer |
+| **System Font** | `SystemFont` | **`8`** | Forces CloudStream to adopt device's native system font with zero-glitch PreDraw engine & main-thread safety |
 
 ---
 
@@ -114,16 +114,16 @@ flowchart LR
 
 ---
 
-### 7. SystemFont: Native System Font Enforcer & Zero-Glitch Engine (v7)
-* **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across all view styles, ignoring user-selected device system fonts. In earlier versions, post-inflation view tree traversal caused a visible font jump/flicker from Google Sans to System Font upon entering the app or opening new screens.
-* **Architecture & Multi-Layer Zero-Glitch Engine**:
-  1. **`TypefaceCompat.sTypefaceCache` LinkedHashMap Interception**: Intercepts the internal storage map of AndroidX's `TypefaceCompat.sTypefaceCache`. When views inflate XML layouts referencing `@font/google_sans`, `@font/productsans_*`, or any font resource, `findFromCache()` immediately returns the pre-cached System Font. Views are born directly with the System Font at instantiation time—eliminating any delayed font swap or visual jump on app entry.
-  2. **Pre-Populated Font Resource Cache**: Proactively populates `TypefaceCompat.sTypefaceCache` with every font resource ID from `com.lagradost.cloudstream3.R$font` across all styles (0..3) and path formats before any views inflate.
-  3. **Comprehensive Native Font Map Patching**: Patches `Typeface.sSystemFontMap` with over 40 font family keys (`google_sans`, `productsans_regular`, `productsans_medium`, `productsans_bold`, `productsans_black`, `netflix_sans`, `open_sans`, `poppins`, `sans-serif`, etc.) and updates `Typeface.sDefaultTypeface`.
-  4. **Synchronous Early Lifecycle Hooks**: Applies font enforcement in `onActivityCreated` immediately after `onCreate()` and `setContentView()`, styling the decor view BEFORE `onStart` or `onResume` and before the initial frame is submitted to the display hardware.
-  5. **Synchronous WindowManagerGlobal Hook**: Hooks `WindowManagerGlobal.mViews` so dynamic dialogs, bottom sheets, and popup windows are styled synchronously before initial layout and draw.
-  6. **RecyclerView & Jetpack Compose Caching**: Hooks `RecyclerView.addOnChildAttachStateChangeListener` for smooth scrolling list items, and clears Compose's `GlobalTypefaceRequestCache` to guarantee zero font thrashing across Compose screens (Settings, etc.).
-  7. **High-Speed `TAG_APPLIED_CONFIG` Guard**: Ensures already-styled views are skipped in 1 nanosecond, eliminating any layout thrashing or infinite relayout loops.
+### 7. SystemFont: Native System Font Enforcer & Zero-Glitch Engine (v8)
+* **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across all view styles, ignoring user-selected device system fonts. In earlier versions, post-inflation view tree traversal caused a visible font jump/flicker from Google Sans to System Font upon entering the app or opening new screens. In v7, touching views on a background worker thread triggered `CalledFromWrongThreadException` causing CloudStream to report `Could not load SystemFont.-1659035842`.
+* **Architecture & Multi-Layer Zero-Glitch Engine (v8)**:
+  1. **Strict Main-Thread UI Invariant**: Every view manipulation method (`applyToViewTree`, `sweepAllCurrentWindows`) explicitly checks `Looper.myLooper() == Looper.getMainLooper()` and dispatches via `mainHandler.post` if called from background worker threads, completely eliminating `CalledFromWrongThreadException`.
+  2. **Fail-Safe Plugin Lifecycle**: `SystemFontPlugin.load()` and `beforeUnload()` are wrapped in top-level `try-catch` blocks, ensuring CloudStream's `PluginManager` never fails or shows `plugin_load_fail` toasts.
+  3. **Zero-Glitch One-Shot `OnPreDrawListener`**: Attaches an `OnPreDrawListener` to `DecorView` and fragments that executes synchronously right before hardware frame 0 is drawn, and immediately unregisters itself (`removeOnPreDrawListener`). Views are converted to the system font before drawing a single pixel, eliminating visual flicker without infinite layout loops.
+  4. **Public `TypefaceCompat.sTypefaceCache` Pre-population**: Safely calls standard `LruCache.put()` with known CloudStream font resource IDs across styles (0..3) without dangerous private map replacement.
+  5. **Comprehensive Native Font Map Patching**: Safely patches `Typeface.sSystemFontMap` with over 40 font family keys (`google_sans`, `productsans_regular`, `productsans_medium`, `productsans_bold`, `productsans_black`, `netflix_sans`, `open_sans`, `poppins`, `sans-serif`, etc.) and updates `Typeface.sDefaultTypeface`.
+  6. **RecyclerView & Jetpack Compose Caching**: Hooks `RecyclerView.addOnChildAttachStateChangeListener` for smooth scrolling list items, and invalidates Compose root views for Settings screens.
+  7. **High-Speed Reference Equality Guard (`===`)**: Compares `view.typeface === target` in 0 nanoseconds so already-styled views are never touched again, preventing layout thrashing.
 
 ---
 

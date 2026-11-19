@@ -17,15 +17,27 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class SystemFontPlugin : Plugin() {
 
     override fun load(context: Context) {
-        SystemFontManager.init(context)
+        try {
+            SystemFontManager.init(context)
+        } catch (t: Throwable) {
+            android.util.Log.e("SystemFont", "Error initializing SystemFontManager", t)
+        }
 
         openSettings = { ctx ->
-            showSettingsDialog(ctx)
+            try {
+                showSettingsDialog(ctx)
+            } catch (t: Throwable) {
+                android.util.Log.e("SystemFont", "Error showing settings dialog", t)
+            }
         }
     }
 
     override fun beforeUnload() {
-        SystemFontManager.cleanup()
+        try {
+            SystemFontManager.cleanup()
+        } catch (t: Throwable) {
+            android.util.Log.e("SystemFont", "Error cleaning up SystemFontManager", t)
+        }
     }
 
     private fun dp(ctx: Context, value: Int): Int {
