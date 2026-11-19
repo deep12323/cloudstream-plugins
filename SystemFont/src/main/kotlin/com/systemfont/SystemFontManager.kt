@@ -27,6 +27,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.lang.reflect.Constructor
+import java.lang.reflect.Field
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
 import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.WeakHashMap
@@ -65,6 +70,18 @@ object SystemFontManager {
     // Reference to Compose interceptor cache to allow instant invalidation on settings change
     @Volatile private var activeComposeLruCache: LruCache<Any, Any>? = null
 
+    // Cached reflection references for zero-overhead font resolution
+    @Volatile private var immutableConstructor: Constructor<*>? = null
+    @Volatile private var fontFamilyClass: Class<*>? = null
+    @Volatile private var resolverInterfaceClass: Class<*>? = null
+    @Volatile private var interceptorInterfaceClass: Class<*>? = null
+    @Volatile private var platformResolveInterceptorProxy: Any? = null
+
+    // Cached fields on TypefaceRequest to avoid repeated reflective scans
+    @Volatile private var trWeightField: Field? = null
+    @Volatile private var trStyleField: Field? = null
+    @Volatile private var trReflectionInitialized = false
+
     /**
      * Intercepting LruCache that replaces TypefaceCompat.sTypefaceCache.
      * Whenever AndroidX or AppCompat requests @font/google_sans or any other font,
@@ -92,15 +109,12 @@ object SystemFontManager {
 
     /**
      * Deep Compose Interceptor LruCache replacing GlobalTypefaceRequestCache.resultCache.
-     * In CloudStream 4 (Compose Multiplatform), all screens (Home, Search, Details, Settings)
-     * query GlobalTypefaceRequestCache.runCached(TypefaceRequest) to render text.
-     * By dynamically returning TypefaceResult.Immutable(systemTypeface) upon request,
-     * Compose renders all text directly in the device's native System Font from frame 0!
+     * Evaluates TypefaceRequests in 0ms, returning pre-computed Immutable TypefaceResults.
      */
     private class ComposeFontInterceptorLruCache(maxSize: Int) : LruCache<Any, Any>(maxSize) {
         override fun create(key: Any): Any? {
             if (!isEnabled()) return null
-            return createComposeTypefaceResult(key)
+            return createComposeTypefaceResultFromRequest(key)
         }
     }
 
@@ -108,12 +122,14 @@ object SystemFontManager {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager v10 with deep Jetpack Compose & View engine.")
+        Log.d(TAG, "Initializing SystemFontManager v11 with Deep Compose Multiplatform Zero-Glitch Engine.")
 
         try {
             rebuildTypefaceCache()
             patchSystemFontMap()
             hookTypefaceCompatCache()
+            initComposeReflection()
+            hookPlatformResolveInterceptorDefault()
             hookComposeTypefaceCache()
             registerLifecycleCallbacks(app)
         } catch (t: Throwable) {
@@ -129,6 +145,7 @@ object SystemFontManager {
                         attachContinuousLayoutObserver(decor)
                     }
                 }
+                sweepAllComposeViews()
                 sweepAllCurrentWindows()
             } catch (t: Throwable) {
                 Log.e(TAG, "Error in initial Main Thread sweep: ${t.message}")
@@ -229,6 +246,205 @@ object SystemFontManager {
     }
 
     /**
+     * Initializes reflection handles for Compose text classes once.
+     */
+    private fun initComposeReflection() {
+        val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+        try {
+            fontFamilyClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.FontFamily")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.FontFamily")
+            }
+        } catch (_: Throwable) {}
+
+        try {
+            resolverInterfaceClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.FontFamily\$Resolver")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.FontFamily\$Resolver")
+            }
+        } catch (_: Throwable) {}
+
+        try {
+            interceptorInterfaceClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.PlatformResolveInterceptor")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.PlatformResolveInterceptor")
+            }
+        } catch (_: Throwable) {}
+
+        try {
+            val immutableClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+            }
+            immutableConstructor = immutableClass.getDeclaredConstructor(Any::class.java, Boolean::class.javaPrimitiveType).apply {
+                isAccessible = true
+            }
+        } catch (_: Throwable) {
+            // Fallback to any constructor
+            try {
+                val immutableClass = Class.forName("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+                immutableConstructor = immutableClass.declaredConstructors.firstOrNull { it.parameterTypes.size == 2 }?.apply {
+                    isAccessible = true
+                }
+            } catch (_: Throwable) {}
+        }
+
+        buildPlatformResolveInterceptorProxy()
+    }
+
+    /**
+     * Builds our dynamic proxy implementing Compose's PlatformResolveInterceptor.
+     * When Compose resolves any FontFamily (including AppFont.googleSans), this interceptor
+     * instantly routes it to FontFamily.Default or FontFamily.SansSerif, bypassing all asset font
+     * loading, async loaders, and coroutine evaluation!
+     */
+    private fun buildPlatformResolveInterceptorProxy() {
+        val iface = interceptorInterfaceClass ?: return
+        try {
+            platformResolveInterceptorProxy = Proxy.newProxyInstance(
+                iface.classLoader,
+                arrayOf(iface),
+                ZeroGlitchPlatformResolveInterceptorInvocationHandler()
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error building PlatformResolveInterceptor proxy: ${t.message}")
+        }
+    }
+
+    /**
+     * Resolves the target Compose FontFamily instance based on current user preference.
+     */
+    private fun getTargetComposeFontFamily(): Any? {
+        val ffc = fontFamilyClass ?: return null
+        return try {
+            val companionField = ffc.getDeclaredField("Companion").apply { isAccessible = true }
+            val companion = companionField.get(null) ?: return null
+            val methodName = when (getFontStyle()) {
+                STYLE_SANS_SERIF -> "getSansSerif"
+                STYLE_SERIF -> "getSerif"
+                STYLE_MONOSPACE -> "getMonospace"
+                else -> "getDefault"
+            }
+            companion.javaClass.getMethod(methodName).invoke(companion)
+        } catch (_: Throwable) {
+            try {
+                val fieldName = when (getFontStyle()) {
+                    STYLE_SANS_SERIF -> "SansSerif"
+                    STYLE_SERIF -> "Serif"
+                    STYLE_MONOSPACE -> "Monospace"
+                    else -> "Default"
+                }
+                ffc.getDeclaredField(fieldName).apply { isAccessible = true }.get(null)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+    }
+
+    /**
+     * InvocationHandler for PlatformResolveInterceptor proxy.
+     */
+    private class ZeroGlitchPlatformResolveInterceptorInvocationHandler : InvocationHandler {
+        override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
+            val name = method.name
+            if (name == "interceptFontFamily") {
+                if (!isEnabled()) return args?.getOrNull(0)
+                val target = getTargetComposeFontFamily()
+                return target ?: args?.getOrNull(0)
+            }
+
+            if (name == "interceptFontWeight") {
+                val weight = args?.getOrNull(0)
+                if (isWeightBoostEnabled() && weight != null) {
+                    return boostFontWeightObject(weight)
+                }
+                return weight
+            }
+
+            if (name.contains("interceptFontStyle")) {
+                return args?.getOrNull(0) ?: 0
+            }
+
+            if (name.contains("interceptFontSynthesis")) {
+                return args?.getOrNull(0) ?: 0
+            }
+
+            if (name == "equals") {
+                return args?.getOrNull(0) === proxy
+            }
+            if (name == "hashCode") {
+                return System.identityHashCode(proxy)
+            }
+            if (name == "toString") {
+                return "ZeroGlitchPlatformResolveInterceptorProxy"
+            }
+
+            return null
+        }
+    }
+
+    private fun boostFontWeightObject(weightObj: Any): Any {
+        try {
+            val field = weightObj.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
+            if (field != null) {
+                field.isAccessible = true
+                val currentW = field.getInt(weightObj)
+                val targetW = if (currentW >= 600) 850 else 550
+                val constructor = weightObj.javaClass.getConstructor(Int::class.javaPrimitiveType)
+                return constructor.newInstance(targetW)
+            }
+        } catch (_: Throwable) {}
+        return weightObj
+    }
+
+    /**
+     * Sets PlatformResolveInterceptor.Companion.Default to our interceptor proxy.
+     * Ensures any new FontFamilyResolverImpl created by Compose automatically uses our interceptor!
+     */
+    private fun hookPlatformResolveInterceptorDefault() {
+        val proxy = platformResolveInterceptorProxy ?: return
+        try {
+            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+            val companionClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.PlatformResolveInterceptor\$Companion")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.PlatformResolveInterceptor\$Companion")
+            }
+
+            val defaultField = companionClass.declaredFields.firstOrNull {
+                it.name == "Default" || it.type.name.contains("PlatformResolveInterceptor")
+            }
+            if (defaultField != null) {
+                defaultField.isAccessible = true
+                defaultField.set(null, proxy)
+                Log.d(TAG, "PlatformResolveInterceptor.Companion.Default hooked successfully!")
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "PlatformResolveInterceptor.Companion.Default fallback: ${t.message}")
+        }
+    }
+
+    /**
+     * Patches the internal platformResolveInterceptor field inside a FontFamilyResolverImpl instance.
+     */
+    private fun patchPlatformResolveInterceptor(resolverInstance: Any) {
+        val proxy = platformResolveInterceptorProxy ?: return
+        try {
+            val field = resolverInstance.javaClass.declaredFields.firstOrNull {
+                it.name == "platformResolveInterceptor" || it.type.name.contains("PlatformResolveInterceptor")
+            }
+            if (field != null) {
+                field.isAccessible = true
+                field.set(resolverInstance, proxy)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
      * Engine 1 (Compose): Intercepts Jetpack Compose Multiplatform font resolution.
      * Replaces GlobalTypefaceRequestCache.resultCache with ComposeFontInterceptorLruCache.
      */
@@ -260,63 +476,162 @@ object SystemFontManager {
                 activeComposeLruCache = currentLru
             }
 
-            // Evict any async cache entries
-            try {
-                val asyncCacheField = resolverKtClass.getDeclaredField("GlobalAsyncTypefaceCache")
-                asyncCacheField.isAccessible = true
-                val asyncCache = asyncCacheField.get(null)
-                if (asyncCache != null) {
-                    for (f in asyncCache.javaClass.declaredFields) {
-                        f.isAccessible = true
-                        val map = f.get(asyncCache) ?: continue
-                        val clearMethod = map.javaClass.methods.firstOrNull { it.name == "clear" || it.name == "evictAll" }
-                        clearMethod?.invoke(map)
-                    }
-                }
-            } catch (_: Throwable) {}
+            // Evict any stale async cache entries so asset loading never triggers recompositions
+            evictAsyncTypefaceCache(resolverKtClass)
         } catch (t: Throwable) {
             Log.d(TAG, "Compose font cache hook fallback: ${t.message}")
         }
     }
 
-    /**
-     * Inspects a Compose TypefaceRequest object and resolves whether Bold or Italic is needed.
-     */
-    private fun resolveTypefaceFromComposeRequest(request: Any): Typeface {
-        var isBold = false
-        var isItalic = false
-
+    private fun evictAsyncTypefaceCache(resolverKtClass: Class<*>? = null) {
         try {
-            for (field in request.javaClass.declaredFields) {
-                field.isAccessible = true
-                val value = field.get(request) ?: continue
-                val typeName = field.type.name
+            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+            val clazz = resolverKtClass ?: try {
+                classLoader.loadClass("androidx.compose.ui.text.font.FontFamilyResolverKt")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.FontFamilyResolverKt")
+            }
 
-                if (typeName.contains("FontWeight") || value.javaClass.name.contains("FontWeight")) {
-                    val weightField = value.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
-                    if (weightField != null) {
-                        weightField.isAccessible = true
-                        val weight = weightField.getInt(value)
-                        if (weight >= 600) isBold = true
-                    }
-                } else if (typeName.contains("FontStyle") || value.javaClass.name.contains("FontStyle")) {
-                    val str = value.toString().lowercase()
-                    if (str.contains("italic") || str.contains("1")) {
-                        isItalic = true
-                    }
+            val asyncCacheField = clazz.getDeclaredField("GlobalAsyncTypefaceCache")
+            asyncCacheField.isAccessible = true
+            val asyncCache = asyncCacheField.get(null)
+            if (asyncCache != null) {
+                for (f in asyncCache.javaClass.declaredFields) {
+                    f.isAccessible = true
+                    val map = f.get(asyncCache) ?: continue
+                    val clearMethod = map.javaClass.methods.firstOrNull { it.name == "clear" || it.name == "evictAll" }
+                    clearMethod?.invoke(map)
                 }
             }
         } catch (_: Throwable) {}
+    }
 
-        // Fallback string check
-        val str = request.toString()
-        if (!isBold && (str.contains("FontWeight(weight=700") || str.contains("FontWeight(weight=800") ||
-                    str.contains("FontWeight(weight=900") || str.contains("W700") || str.contains("W800") ||
-                    str.contains("W900") || str.contains("Bold") || str.contains("Medium"))) {
-            isBold = true
+    /**
+     * Directly injects our zero-glitch FontFamily.Resolver dynamic proxy into an AndroidComposeView.
+     * This provides 0ms font resolution directly to LocalFontFamilyResolver, ensuring that every
+     * Composable inside the view receives the device's native system font on frame 0 without glitch!
+     */
+    fun hookAndroidComposeView(view: View) {
+        if (!view.javaClass.name.contains("AndroidComposeView")) return
+        try {
+            val resolverField = view.javaClass.declaredFields.firstOrNull {
+                it.name == "fontFamilyResolver" || it.name.contains("fontFamilyResolver")
+            } ?: return
+            resolverField.isAccessible = true
+            val state = resolverField.get(view) ?: return
+
+            val getValueMethod = state.javaClass.getMethod("getValue")
+            val setValueMethod = state.javaClass.getMethod("setValue", Any::class.java)
+            val currentResolver = getValueMethod.invoke(state) ?: return
+
+            // First patch the internal platformResolveInterceptor on currentResolver
+            patchPlatformResolveInterceptor(currentResolver)
+
+            // If not already our custom proxy, wrap it with ZeroGlitchFontResolverInvocationHandler
+            if (!Proxy.isProxyClass(currentResolver.javaClass)) {
+                val iface = resolverInterfaceClass ?: try {
+                    appContext?.classLoader?.loadClass("androidx.compose.ui.text.font.FontFamily\$Resolver")
+                } catch (_: Throwable) {
+                    Class.forName("androidx.compose.ui.text.font.FontFamily\$Resolver")
+                }
+
+                if (iface != null) {
+                    val proxy = Proxy.newProxyInstance(
+                        iface.classLoader,
+                        arrayOf(iface),
+                        ZeroGlitchFontResolverInvocationHandler(currentResolver)
+                    )
+                    setValueMethod.invoke(state, proxy)
+                    Log.d(TAG, "Injected ZeroGlitchFontResolver into AndroidComposeView!")
+                }
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "hookAndroidComposeView fallback: ${t.message}")
         }
-        if (!isItalic && (str.contains("Italic") || str.contains("FontStyle(value=1)"))) {
-            isItalic = true
+    }
+
+    /**
+     * Dynamic proxy InvocationHandler for FontFamily.Resolver.
+     * Resolves all fonts instantly (0ms) into pre-computed system TypefaceResult.Immutable.
+     */
+    private class ZeroGlitchFontResolverInvocationHandler(
+        private val delegate: Any
+    ) : InvocationHandler {
+        override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
+            val name = method.name
+            if (!isEnabled()) {
+                return method.invoke(delegate, *(args ?: emptyArray()))
+            }
+
+            if (name.contains("resolve") || name.contains("mo3408")) {
+                // resolve-DPcqOEQ(fontFamily, fontWeight, fontStyle, fontSynthesis)
+                val weightArg = args?.getOrNull(1)
+                val styleArg = args?.getOrNull(2)
+                val targetTf = resolveTargetTypefaceFromArgs(weightArg, styleArg)
+                val result = createComposeTypefaceResultDirect(targetTf)
+                if (result != null) {
+                    return result
+                }
+                return method.invoke(delegate, *(args ?: emptyArray()))
+            }
+
+            if (name == "preload") {
+                return Unit
+            }
+
+            if (name == "equals") {
+                return args?.getOrNull(0) === proxy
+            }
+            if (name == "hashCode") {
+                return System.identityHashCode(proxy)
+            }
+            if (name == "toString") {
+                return "ZeroGlitchSystemFontResolverProxy"
+            }
+
+            return method.invoke(delegate, *(args ?: emptyArray()))
+        }
+    }
+
+    /**
+     * Resolves weight and style from resolve-DPcqOEQ method arguments in 0ms.
+     */
+    private fun resolveTargetTypefaceFromArgs(weightObj: Any?, styleObj: Any?): Typeface {
+        var isBold = false
+        var isItalic = false
+
+        if (weightObj != null) {
+            val w = when (weightObj) {
+                is Int -> weightObj
+                is Number -> weightObj.toInt()
+                else -> {
+                    try {
+                        val field = weightObj.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
+                        if (field != null) {
+                            field.isAccessible = true
+                            field.getInt(weightObj)
+                        } else 400
+                    } catch (_: Throwable) { 400 }
+                }
+            }
+            if (w >= 600) isBold = true
+        }
+
+        if (styleObj != null) {
+            val s = when (styleObj) {
+                is Int -> styleObj
+                is Number -> styleObj.toInt()
+                else -> {
+                    try {
+                        val field = styleObj.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
+                        if (field != null) {
+                            field.isAccessible = true
+                            field.getInt(styleObj)
+                        } else 0
+                    } catch (_: Throwable) { 0 }
+                }
+            }
+            if (s == 1) isItalic = true
         }
 
         return when {
@@ -328,24 +643,80 @@ object SystemFontManager {
     }
 
     /**
-     * Wraps the resolved System Typeface in a TypefaceResult.Immutable object for Jetpack Compose.
+     * Fast resolution of Typeface from Compose's TypefaceRequest object.
+     * Uses cached Field handles to eliminate reflection overhead on cache misses.
      */
-    private fun createComposeTypefaceResult(request: Any): Any? {
-        val tf = resolveTypefaceFromComposeRequest(request)
-        return try {
-            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
-            val immutableClass = try {
-                classLoader.loadClass("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
-            } catch (_: Throwable) {
-                Class.forName("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+    private fun resolveTypefaceFromComposeRequest(request: Any): Typeface {
+        var isBold = false
+        var isItalic = false
+
+        try {
+            if (!trReflectionInitialized) {
+                for (f in request.javaClass.declaredFields) {
+                    f.isAccessible = true
+                    val typeName = f.type.name
+                    if (typeName.contains("FontWeight") || f.name.contains("weight", ignoreCase = true)) {
+                        trWeightField = f
+                    } else if (f.type == Int::class.javaPrimitiveType && f.name.contains("style", ignoreCase = true)) {
+                        trStyleField = f
+                    }
+                }
+                trReflectionInitialized = true
             }
 
-            val constructor = immutableClass.declaredConstructors.firstOrNull { c ->
-                val p = c.parameterTypes
-                (p.size == 2 && p[0] == Any::class.java) || (p.size == 1 && p[0] == Any::class.java)
-            } ?: immutableClass.declaredConstructors.first()
-            constructor.isAccessible = true
+            val wVal = trWeightField?.get(request)
+            if (wVal != null) {
+                if (wVal is Number) {
+                    if (wVal.toInt() >= 600) isBold = true
+                } else {
+                    val intField = wVal.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
+                    if (intField != null) {
+                        intField.isAccessible = true
+                        if (intField.getInt(wVal) >= 600) isBold = true
+                    }
+                }
+            }
 
+            val sVal = trStyleField?.getInt(request)
+            if (sVal != null && sVal == 1) {
+                isItalic = true
+            }
+        } catch (_: Throwable) {}
+
+        if (!isBold || !isItalic) {
+            val str = request.toString()
+            if (!isBold && (str.contains("weight=700") || str.contains("weight=800") ||
+                        str.contains("weight=900") || str.contains("W700") || str.contains("W800") ||
+                        str.contains("Bold") || str.contains("Medium"))) {
+                isBold = true
+            }
+            if (!isItalic && (str.contains("Italic") || str.contains("value=1"))) {
+                isItalic = true
+            }
+        }
+
+        return when {
+            isBold && isItalic -> cachedBoldItalic
+            isBold -> cachedBold
+            isItalic -> cachedItalic
+            else -> cachedNormal
+        } ?: cachedNormal ?: Typeface.DEFAULT
+    }
+
+    private fun createComposeTypefaceResultFromRequest(request: Any): Any? {
+        val tf = resolveTypefaceFromComposeRequest(request)
+        return createComposeTypefaceResultDirect(tf)
+    }
+
+    /**
+     * Direct creation of TypefaceResult.Immutable wrapping the target Typeface in 0ms.
+     */
+    private fun createComposeTypefaceResultDirect(tf: Typeface): Any? {
+        return try {
+            if (immutableConstructor == null) {
+                initComposeReflection()
+            }
+            val constructor = immutableConstructor ?: return null
             if (constructor.parameterTypes.size == 2) {
                 constructor.newInstance(tf, true)
             } else {
@@ -355,6 +726,48 @@ object SystemFontManager {
             Log.e(TAG, "Error creating TypefaceResult.Immutable: ${t.message}")
             null
         }
+    }
+
+    /**
+     * Sweeps AndroidComposeView.Companion.composeViews static list.
+     * Hooks every single active Compose view in the process instantly!
+     */
+    fun sweepAllComposeViews() {
+        try {
+            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+            val acvClass = try {
+                classLoader.loadClass("androidx.compose.ui.platform.AndroidComposeView")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.platform.AndroidComposeView")
+            }
+
+            val composeViewsField = acvClass.declaredFields.firstOrNull {
+                it.name == "composeViews" || it.type.name.contains("ObjectList")
+            }
+            if (composeViewsField != null) {
+                composeViewsField.isAccessible = true
+                val list = composeViewsField.get(null)
+                if (list != null) {
+                    val contentField = list.javaClass.declaredFields.firstOrNull { it.type.isArray }
+                        ?: list.javaClass.superclass?.declaredFields?.firstOrNull { it.type.isArray }
+                    val sizeField = list.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType && it.name.contains("size") }
+                        ?: list.javaClass.superclass?.declaredFields?.firstOrNull { it.type == Int::class.javaPrimitiveType && it.name.contains("size") }
+
+                    if (contentField != null && sizeField != null) {
+                        contentField.isAccessible = true
+                        sizeField.isAccessible = true
+                        val content = contentField.get(list) as? Array<*>
+                        val size = sizeField.getInt(list)
+                        if (content != null) {
+                            for (i in 0 until minOf(size, content.size)) {
+                                val v = content[i] as? View ?: continue
+                                hookAndroidComposeView(v)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -412,6 +825,8 @@ object SystemFontManager {
                     "productsans_medium" to 2131296272,
                     "productsans_bold" to 2131296267,
                     "productsans_black" to 2131296265,
+                    "productsans_light" to 2131296270,
+                    "productsans_thin" to 2131296275,
                     "netflix_sans" to 2131296262,
                     "open_sans" to 2131296263,
                     "poppins_regular" to 2131296264,
@@ -541,8 +956,7 @@ object SystemFontManager {
 
     /**
      * Attaches a continuous OnGlobalLayoutListener to the window.
-     * Fires whenever the layout changes (navigating tabs, loading movie details, opening search),
-     * applying the font BEFORE the frame reaches the screen.
+     * Fires when layout changes during navigation transitions, hooking any newly attached view.
      */
     private fun attachContinuousLayoutObserver(view: View) {
         if (!attachedLayoutViews.add(view)) return
@@ -555,6 +969,7 @@ object SystemFontManager {
                 val root = viewRef.get()
                 if (root != null) {
                     applyToViewTree(root)
+                    sweepAllComposeViews()
                 }
             }
             vto.addOnGlobalLayoutListener(listener)
@@ -577,6 +992,7 @@ object SystemFontManager {
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
+                        sweepAllComposeViews()
                     }
                 }
 
@@ -587,6 +1003,7 @@ object SystemFontManager {
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
+                        sweepAllComposeViews()
                     }
                 }
 
@@ -597,6 +1014,7 @@ object SystemFontManager {
                             applyToViewTree(decor)
                             attachContinuousLayoutObserver(decor)
                         }
+                        sweepAllComposeViews()
                     }
                 }
 
@@ -625,12 +1043,14 @@ object SystemFontManager {
                     ) {
                         applyToViewTree(v)
                         attachContinuousLayoutObserver(v)
+                        sweepAllComposeViews()
                     }
 
                     override fun onFragmentStarted(fm: FragmentManager, f: Fragment) {
                         f.view?.let {
                             applyToViewTree(it)
                             attachContinuousLayoutObserver(it)
+                            sweepAllComposeViews()
                         }
                     }
 
@@ -638,6 +1058,7 @@ object SystemFontManager {
                         f.view?.let {
                             applyToViewTree(it)
                             attachContinuousLayoutObserver(it)
+                            sweepAllComposeViews()
                         }
                     }
                 },
@@ -671,6 +1092,8 @@ object SystemFontManager {
             applyToViewTree(decor)
             attachContinuousLayoutObserver(decor)
         }
+
+        sweepAllComposeViews()
     }
 
     fun applyToViewTree(root: View?) {
@@ -710,7 +1133,7 @@ object SystemFontManager {
         // Support for Jetpack Compose root views (AndroidComposeView, etc.)
         if (view.javaClass.name.contains("AndroidComposeView") || view.javaClass.name.contains("ComposeView")) {
             if (hookedComposeViews.add(view)) {
-                view.invalidate()
+                hookAndroidComposeView(view)
             }
         }
 
@@ -735,24 +1158,28 @@ object SystemFontManager {
         rebuildTypefaceCache()
         patchSystemFontMap()
         hookTypefaceCompatCache()
+        buildPlatformResolveInterceptorProxy()
+        hookPlatformResolveInterceptorDefault()
         activeComposeLruCache?.evictAll()
         hookComposeTypefaceCache()
-        hookedComposeViews.forEach { it.invalidate() }
+        sweepAllComposeViews()
         mainHandler.post {
             sweepAllCurrentWindows()
+            hookedComposeViews.forEach { it.invalidate() }
         }
     }
 
     /**
-     * Background guardian checks for un-styled views every 1 second as an extra safety backstop.
+     * Background guardian checks for un-styled views every 2.5 seconds as an extra safety backstop.
      */
     private fun startGentleGuardian() {
         guardianJob?.cancel()
         guardianJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(1000)
+                delay(2500)
                 if (isEnabled()) {
                     mainHandler.post {
+                        sweepAllComposeViews()
                         sweepAllCurrentWindows()
                     }
                 }

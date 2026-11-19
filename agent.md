@@ -37,7 +37,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`10`** | Deep Jetpack Compose Multiplatform & View font interception engine |
+| **System Font** | `SystemFont` | **`11`** | Deep Jetpack Compose Multiplatform Zero-Glitch Engine & View font interceptor |
 
 ---
 
@@ -114,14 +114,25 @@ flowchart LR
 
 ---
 
-### 7. SystemFont: Deep Jetpack Compose Multiplatform & View Engine (v10)
-* **Problem**: CloudStream 4 Prerelease (`com.lagradost.cloudstream3.prerelease`) is written in Jetpack Compose Multiplatform. Screens (Home, Search, Details, Settings) render text using Compose's `AppFont.googleSans` via internal canvas drawing rather than traditional Android `TextView`s. Traditional view traversal was unable to intercept Compose canvas text before rendering.
-* **Architecture & Deep Compose Engine (v10)**:
-  1. **Compose `GlobalTypefaceRequestCache` Replacement**: Injected `ComposeFontInterceptorLruCache` directly into Compose's internal `GlobalTypefaceRequestCache.resultCache`. Whenever Compose evaluates any `TypefaceRequest` (`headlineLarge`, `titleMedium`, `bodyMedium`, `labelSmall`), our cache dynamically creates and returns `TypefaceResult.Immutable` wrapping the device's native System Font (`MiSans` / System Font). Compose renders all text natively in the device font from frame 0 with 0ms delay and zero font jump.
-  2. **Compose Weight & Style Resolution**: Reflects on Compose's `FontWeight` (`>= 600`) and `FontStyle` to map bold/italic requests accurately to `cachedBold`, `cachedItalic`, `cachedBoldItalic`, and `cachedNormal`.
-  3. **AndroidX `TypefaceCompat.sTypefaceCache` Font Interceptor**: Replaced AndroidX's `sTypefaceCache` with `FontInterceptorLruCache` (capacity 1024) to intercept all XML font lookups (`google_sans`, `productsans_*`).
-  4. **Continuous `OnGlobalLayoutListener`**: Keeps continuous window observers on all DecorViews and Fragment views for continuous coverage during navigation transitions.
-  5. **Native `Typeface.sSystemFontMap` Patching**: Overwrites JVM font family table with system font aliases.
+### 7. SystemFont: Deep Jetpack Compose Multiplatform Zero-Glitch Engine (v10 & v11)
+* **Problem**: In v10, users observed a momentary font jump / visual glitch during screen navigation, scrolling, and opening movie details. Reverse-engineering revealed that Jetpack Compose Multiplatform in CloudStream 4 creates separate `FontFamilyResolverImpl` instances per view with `AndroidFontResolveInterceptor`, and `FontListFontFamilyTypefaceAdapter` asynchronously loaded `productsans_*.ttf` asset files before resolving fallback fonts, triggering recompositions.
+* **Architecture & Zero-Glitch Engine in v11**:
+  1. **Direct `PlatformResolveInterceptor` Dynamic Proxy**:
+     * Installed a dynamic proxy on `PlatformResolveInterceptor.Companion.Default` and across all `FontFamilyResolverImpl.platformResolveInterceptor` fields.
+     * Intercepts `interceptFontFamily(fontFamily) -> FontFamily.Default` or `FontFamily.SansSerif` synchronously in 0ms, collapsing any `FontListFontFamily` directly into the system font family before `FontListFontFamilyTypefaceAdapter` or `AsyncTypefaceCache` can query asset files or start background coroutines.
+  2. **`AndroidComposeView` Resolver Injection (`ZeroGlitchFontResolverProxy`)**:
+     * Traverses `AndroidComposeView.Companion.composeViews` and window decor views.
+     * Reflectively wraps `AndroidComposeView.fontFamilyResolver` (`MutableState<FontFamily.Resolver>`) with a dynamic proxy implementing `FontFamily.Resolver`.
+     * `resolve` queries (`mo3408resolveDPcqOEQ`) return pre-computed `TypefaceResult.Immutable` instances wrapping `cachedNormal`, `cachedBold`, `cachedItalic`, and `cachedBoldItalic` in 0ms without touching disk or assets.
+  3. **Optimized `ComposeFontInterceptorLruCache`**:
+     * Intercepts `GlobalTypefaceRequestCache.resultCache`.
+     * Cached reflection constructors (`TypefaceResult$Immutable(Object, boolean)`) and field handles (`trWeightField`, `trStyleField`) eliminate reflective scanning overhead on cache misses.
+  4. **`GlobalAsyncTypefaceCache` Eviction**:
+     * Evicts stale asset font loading entries so background asset loaders never finish and trigger UI recompositions.
+  5. **Clean Non-Thrashing View Observers**:
+     * Replaced continuous invalidations with targeted view hooking, ensuring zero frame drops or visual flickers during rapid navigation.
+  6. **AndroidX `TypefaceCompat.sTypefaceCache` & `Typeface.sSystemFontMap`**:
+     * Maintains prefilled AppCompat font caches (1024 capacity) and JVM system font aliases for complete coverage across all traditional Android Views and dialogs.
 
 ---
 
