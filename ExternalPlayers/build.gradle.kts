@@ -1,9 +1,15 @@
 import java.io.File
 
-version = 2
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
+}
+
+version = 3
 
 cloudstream {
-    description = "External player integrations: MPV Infinity (Mpv∞), mpvEx, and 1DM Video Downloader & Player"
+    description = "External player integrations: MPV Infinity, mpvEx, 1DM, and custom external players manager"
     authors = listOf("deepu2135")
     status = 1
     tvTypes = listOf("Others")

@@ -1,3 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
+        <package android:name="app.infinity.mpvz" />
+        <package android:name="app.infinity.mpvz.debug" />
+        <package android:name="app.marlboroadvance.mpvex" />
+        <package android:name="app.adityanarvekar.mpvex" />
+        <package android:name="idm.internet.download.manager" />
+        <package android:name="idm.internet.download.manager.plus" />
+        <package android:name="idm.internet.download.manager.adm.lite" />
+        <package android:name="org.videolan.vlc" />
+        <package android:name="com.mxtech.videoplayer.ad" />
+        <package android:name="com.mxtech.videoplayer.pro" />
+        <package android:name="com.brouken.player" />
+        <package android:name="dev.anilbeesetti.nextplayer" />
+        <package android:name="org.courville.nova" />
+        <package android:name="is.xyz.mpv" />
+    </queries>
 </manifest>

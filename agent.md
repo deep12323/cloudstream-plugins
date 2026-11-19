@@ -31,13 +31,13 @@ flowchart LR
 | Plugin Name | Internal ID | Version | Description |
 |---|---|---|---|
 | **TorrServe** | `TorrServe` | `6` | BitTorrent engine with 40+ Tier-1 trackers & memory tuner |
-| **External Players** | `ExternalPlayers` | **`2`** | MPV Infinity, mpvEx & 1DM integrations in video player selector |
+| **External Players** | `ExternalPlayers` | **`3`** | MPV Infinity, mpvEx, 1DM & customizable manual/detected external player manager |
 | **Skip Torrent Warning**| `SkipTorrentWarning` | `3` | Bypasses torrent confirmation dialog & displays live stats |
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`1`** | Forces CloudStream to adopt device's native system font instead of hardcoded Google Sans |
+| **System Font** | `SystemFont` | **`7`** | Forces CloudStream to adopt device's native system font with zero-glitch inflation cache interception & early lifecycle enforcer |
 
 ---
 
@@ -89,11 +89,16 @@ flowchart LR
 
 ---
 
-### 5. ExternalPlayers: Added mpvEx Integration (v2)
-* **Feature**: Add `https://play.google.com/store/apps/details?id=app.adityanarvekar.mpvex` as external player in ExternalPlayers.
-* **Implementation Details**:
-  1. **Action Class (`MpvExAction`)**: Implemented `VideoClickAction()` with label `Play in mpvEx`. Supports both Play Store package (`app.adityanarvekar.mpvex`) and GitHub / F-Droid packages (`app.marlboroadvance.mpvex`). Passes subtitles, playback position, headers.
-  2. **Progress Tracking**: `onResult` captures returned `position` and `duration` extras and updates playback status in CloudStream.
+### 5. ExternalPlayers: Custom & Manual External Players Manager + mpvEx & Defaults (v3)
+* **Feature**: Add setting in External Players to manually add external players, keep default players (MPV Infinity, mpvEx, 1DM) added by default, and allow removing any players (both built-in defaults and custom ones).
+* **Architecture & Features**:
+  1. **Built-in Defaults**: Out-of-the-box support for MPV Infinity (`app.infinity.mpvz`), mpvEx (`app.marlboroadvance.mpvex` / `app.adityanarvekar.mpvex`), and 1DM (`idm.internet.download.manager.plus`).
+  2. **Total Removal & Management Power**: Every player (built-in or custom) has an instant toggle and a deletion button with confirmation. When deleted, it is removed from preferences and `VideoClickActionHolder.allVideoClickActions` immediately.
+  3. **Manual Player Addition**: Input dialog allowing users to enter custom Player Display Name, Package Name (Application ID), and optional Activity Name.
+  4. **1-Tap Installed Video App Scanner**: Device scanner querying `Intent.ACTION_VIEW` (`video/*`) and checking popular media players (VLC, MX Player, Just Player, Next Player, Nova Video Player, mpv-android, BubbleUPnP, KMPlayer) for 1-tap addition without manual package typing.
+  5. **Dynamic 20-Slot Architecture (`CustomPlayerSlot0..19`)**: Ensures each custom player has a distinct qualified Kotlin class name, providing unique `uniqueId()` required by CloudStream's `getByUniqueId()` preference mapping.
+  6. **Universal Intent Extras**: Forwards subtitles (multi-format array + single URI), title/filename, resume playback positions, User-Agent, Referer, custom headers (bundle and string array), and URI read permissions.
+  7. **Instant Live Synchronization**: Updates `VideoClickActionHolder.allVideoClickActions` upon adding, deleting, or toggling players without needing an app restart. Includes "↺ Reset to Defaults" button.
 
 ---
 
@@ -108,15 +113,16 @@ flowchart LR
 
 ---
 
-### 7. SystemFont: Native System Font Enforcer (v1)
-* **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across `AppTextViewStyle`, `AppButtonStyle`, `AppEditStyle`, and `AppMaterialButtonStyle`, ignoring user-selected device system fonts (Samsung One, OnePlus Sans, MiSans, Roboto, custom Monotype/Magisk fonts).
-* **Architecture & Multi-Layer Replacement**:
-  1. **View Tree Traverser**: Recursively scans all `TextView` and subclass elements (`Button`, `EditText`, `Chip`, `TabLayout`, etc.) across Activity and Fragment layouts.
-  2. **Typeface Resolution & Preservation**: Extracts existing `weight`, `style`, bold, and italic attributes and maps them dynamically to the selected system font (`Typeface.DEFAULT`, `SANS_SERIF`, `SERIF`, `MONOSPACE`).
-  3. **RecyclerView Dynamic Hooking**: Hooks `RecyclerView.addOnChildAttachStateChangeListener` so recycled list items on home, search, and catalogue rows are updated as they scroll into view.
-  4. **Activity & Fragment Lifecycle Callbacks**: Hooks `Application.ActivityLifecycleCallbacks` and `FragmentManager.FragmentLifecycleCallbacks` (`onFragmentViewCreated`, `onFragmentResumed`) plus `ViewTreeObserver.OnGlobalLayoutListener`.
-  5. **Guardian Daemon**: Runs periodic sweeps to catch dynamic dialogs, menus, and bottom sheets.
-  6. **Minimal Settings Dialog**: Real-time live preview, style selector, and OLED weight boost (+150).
+### 7. SystemFont: Native System Font Enforcer & Zero-Glitch Engine (v7)
+* **Problem**: CloudStream's core theme (`AppTheme`) hardcodes `android:fontFamily = @font/google_sans` across all view styles, ignoring user-selected device system fonts. In earlier versions, post-inflation view tree traversal caused a visible font jump/flicker from Google Sans to System Font upon entering the app or opening new screens.
+* **Architecture & Multi-Layer Zero-Glitch Engine**:
+  1. **`TypefaceCompat.sTypefaceCache` LinkedHashMap Interception**: Intercepts the internal storage map of AndroidX's `TypefaceCompat.sTypefaceCache`. When views inflate XML layouts referencing `@font/google_sans`, `@font/productsans_*`, or any font resource, `findFromCache()` immediately returns the pre-cached System Font. Views are born directly with the System Font at instantiation time—eliminating any delayed font swap or visual jump on app entry.
+  2. **Pre-Populated Font Resource Cache**: Proactively populates `TypefaceCompat.sTypefaceCache` with every font resource ID from `com.lagradost.cloudstream3.R$font` across all styles (0..3) and path formats before any views inflate.
+  3. **Comprehensive Native Font Map Patching**: Patches `Typeface.sSystemFontMap` with over 40 font family keys (`google_sans`, `productsans_regular`, `productsans_medium`, `productsans_bold`, `productsans_black`, `netflix_sans`, `open_sans`, `poppins`, `sans-serif`, etc.) and updates `Typeface.sDefaultTypeface`.
+  4. **Synchronous Early Lifecycle Hooks**: Applies font enforcement in `onActivityCreated` immediately after `onCreate()` and `setContentView()`, styling the decor view BEFORE `onStart` or `onResume` and before the initial frame is submitted to the display hardware.
+  5. **Synchronous WindowManagerGlobal Hook**: Hooks `WindowManagerGlobal.mViews` so dynamic dialogs, bottom sheets, and popup windows are styled synchronously before initial layout and draw.
+  6. **RecyclerView & Jetpack Compose Caching**: Hooks `RecyclerView.addOnChildAttachStateChangeListener` for smooth scrolling list items, and clears Compose's `GlobalTypefaceRequestCache` to guarantee zero font thrashing across Compose screens (Settings, etc.).
+  7. **High-Speed `TAG_APPLIED_CONFIG` Guard**: Ensures already-styled views are skipped in 1 nanosecond, eliminating any layout thrashing or infinite relayout loops.
 
 ---
 

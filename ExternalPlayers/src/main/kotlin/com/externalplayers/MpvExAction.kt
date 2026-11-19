@@ -49,8 +49,11 @@ class MpvExAction : VideoClickAction() {
     }
 
     override fun shouldShow(context: Context?, video: ResultEpisode?): Boolean {
-        // Show in settings/dialog if installed or context is null
+        // Show in settings/dialog if installed or context is null, provided it is enabled in player settings
         if (context == null) return true
+        val isConfigured = ExternalPlayersManager.getPlayers(context)
+            .any { it.id == ExternalPlayersManager.ID_MPVEX && it.isEnabled }
+        if (!isConfigured) return false
         return getInstalledPackage(context) != null
     }
 
