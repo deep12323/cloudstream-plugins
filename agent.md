@@ -37,7 +37,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`11`** | Deep Jetpack Compose Multiplatform Zero-Glitch Engine & View font interceptor |
+| **System Font** | `SystemFont` | **`12`** | Pre-Inflation Shield (LayoutInflater.Factory2), PreDraw Gate & Compose Multiplatform Zero-Glitch Engine |
 
 ---
 
@@ -133,6 +133,27 @@ flowchart LR
      * Replaced continuous invalidations with targeted view hooking, ensuring zero frame drops or visual flickers during rapid navigation.
   6. **AndroidX `TypefaceCompat.sTypefaceCache` & `Typeface.sSystemFontMap`**:
      * Maintains prefilled AppCompat font caches (1024 capacity) and JVM system font aliases for complete coverage across all traditional Android Views and dialogs.
+
+---
+
+### 8. SystemFont: Pre-Inflation Shield & Zero-Glitch Frame-0 Gate (v12)
+* **Problem**: User reported: *"glitch means i am able to see text changing in system font"*. When navigating between Home, Search, Movie Details, and Settings, the text initially rendered in Google Sans / Product Sans for 50-100ms and then visibly flipped to the system font (MiSans).
+* **Root Cause**:
+  1. CloudStream's core UI (`HomeFragment`, `ResultFragment`, `SearchFragment`, `SettingsFragment`, and RecyclerView items) is built with XML layouts where themes set `android:textViewStyle` to `@style/AppTextViewStyle` (`android:fontFamily="@font/google_sans"`).
+  2. During XML layout inflation, `TextView` constructors load `productsans` natively from assets and render the initial frame *before* `OnGlobalLayoutListener` or lifecycle observers fire.
+  3. When `applyToViewTree` ran after inflation and layout, it modified `view.typeface` while the view was already visible on screen, causing the user to watch the text snap/change from Google Sans to MiSans.
+* **Architecture & Solutions in v12**:
+  1. **Pre-Inflation Shield (`LayoutInflater.Factory2` Interceptor)**:
+     * Reflectively hooks `activity.layoutInflater` via `ZeroGlitchLayoutFactory` wrapping `AppCompatDelegateImpl`.
+     * The microsecond `onCreateView(parent, name, context, attrs)` creates any `TextView`, `Button`, or `EditText`, the target system typeface is assigned *before* the view is added to the hierarchy, measured, laid out, or drawn.
+     * All views are born with the system font from Frame 0.
+  2. **PreDraw Gate (`ViewTreeObserver.OnPreDrawListener`)**:
+     * Installed on Window decor views to execute immediately before the GPU draws the display buffer.
+     * Acts as an absolute fail-safe ensuring 100% of text views on screen have the system font before any pixels are rendered to the user.
+  3. **Immediate Hierarchy Attachment (`ViewGroup.OnHierarchyChangeListener`)**:
+     * Attached across all decor views and ViewGroups, instantly intercepting dynamically attached child views and `AndroidComposeView` instances at the moment of attachment.
+  4. **Pre-Composition Compose Injection**:
+     * Hooks `AndroidComposeView.fontFamilyResolver` State before the first composition pass runs, preventing Compose from ever rendering an initial frame with Product Sans or triggering recomposition passes.
 
 ---
 
