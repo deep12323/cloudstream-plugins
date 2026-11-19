@@ -10,7 +10,7 @@ import java.net.URLEncoder
 
 class TorrServeProvider(var pluginContext: Context? = null) : MainAPI() {
     override var mainUrl = "http://127.0.0.1:8090"
-    override var name = "TorrServe Player"
+    override var name = "TorrServe"
     override val hasMainPage = false
     override var lang = "en"
     override val hasQuickSearch = false
@@ -75,7 +75,7 @@ class TorrServeProvider(var pluginContext: Context? = null) : MainAPI() {
                 val bufferMb = if (ctx != null) TorrServeManager.getCacheSizeMb(ctx) else 128L
                 return newTvSeriesLoadResponse(title, magnetUrl, TvType.TvSeries, episodes) {
                     this.posterUrl = "https://raw.githubusercontent.com/YouROK/TorrServer/master/server/web/public/favicon.ico"
-                    this.plot = "Multi-file BitTorrent stream via TorrServer (${bufferMb}MB buffer)"
+                    this.plot = "BitTorrent stream via TorrServer"
                 }
             }
         } catch (e: Exception) {
@@ -84,7 +84,7 @@ class TorrServeProvider(var pluginContext: Context? = null) : MainAPI() {
 
         return newMovieLoadResponse(title, magnetUrl, TvType.Torrent, magnetUrl) {
             this.posterUrl = "https://raw.githubusercontent.com/YouROK/TorrServer/master/server/web/public/favicon.ico"
-            this.plot = "BitTorrent stream via TorrServer (Configurable buffer)"
+            this.plot = "BitTorrent stream via TorrServer"
         }
     }
 
@@ -150,7 +150,7 @@ class TorrServeProvider(var pluginContext: Context? = null) : MainAPI() {
             callback(
                 newExtractorLink(
                     source = this.name,
-                    name = "$name: $fileName",
+                    name = fileName,
                     url = playUrl
                 ) {
                     this.referer = ""

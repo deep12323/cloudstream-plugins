@@ -30,7 +30,7 @@ flowchart LR
 
 | Plugin Name | Internal ID | Version | Description |
 |---|---|---|---|
-| **TorrServe** | `TorrServe` | `6` | BitTorrent engine with 40+ Tier-1 trackers & memory tuner |
+| **TorrServe** | `TorrServe` | **`7`** | BitTorrent streaming engine |
 | **External Players** | `ExternalPlayers` | **`4`** | External video players integration |
 | **Skip Torrent Warning**| `SkipTorrentWarning` | `3` | Bypasses torrent confirmation dialog & displays live stats |
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
@@ -166,6 +166,27 @@ flowchart LR
   1. **Removed `setOnHierarchyChangeListener` Hijacking**: Completely eliminated ViewGroup hierarchy listener replacement, preserving `CoordinatorLayout` and `BottomSheetBehavior` internal lifecycles and background shape drawables intact.
   2. **Pure `Factory2` Delegation**: `ZeroGlitchLayoutFactory` now only intercepts `TextView` instances and returns `null` for all layout containers and dialog frames, allowing Android's `LayoutInflater` to natively resolve dialog themes, background drawables, and corner elevations with 100% opacity.
   3. **Retained Frame-0 Font Shield**: All `TextView`, `Button`, and `EditText` instances in both the main window and bottom sheet dialogs continue to be intercepted at creation, maintaining zero font jumps.
+
+---
+
+### 10. TorrServe: Declutter Text & Clean Modern Look (v7)
+* **Goal**: Remove verbose text clutter, emoji prefixes, and repetitive labels across TorrServe to establish a sleek, minimal, and clean UI.
+* **Changes Made**:
+  1. **Metadata & Repository**:
+     * Cleaned description in `build.gradle.kts` and `.github/workflows/build.yml` to `"BitTorrent streaming engine"` (stripped long list of features and buzzwords).
+     * Unified provider display name to `"TorrServe"` in `TorrServeProvider.kt`.
+  2. **Stream Link & Load Responses**:
+     * Extracted clean filename for stream links (`name = fileName`) rather than redundant `"$name: $fileName"` which previously duplicated the provider name alongside the source badge.
+     * Cleaned movie/series load response plot to `"BitTorrent stream via TorrServer"`.
+  3. **Settings Dialog**:
+     * Cleaned header: `"TorrServe"` title with concise `"BitTorrent Streaming Configuration"` subtitle.
+     * Compact status indicator (`Online: $url` / `Standby`).
+     * Clean profile labels (`Keep Alive`, `Fast Stream`, `TV / Low RAM`, `4K Cinema`, `Default`) without emoji clutter.
+     * Clean 1-line description tags for Buffer Size, Preload, Read-Ahead, Disconnect Timeout, and Trackers.
+     * Stripped emojis (`⭐`, `🛡️`, `✏️`, `🔄`) from preset chips and buttons (`Custom`, `30s`, `1m`, `2m`, `5m`, `10m`, `Re-inject Trackers`).
+     * Clean toggle labels: `Disable Seeding` and `Disk Cache`.
+     * Concise action buttons (`Cancel` and `Save`) and minimal toast (`Settings saved`).
+  4. **Version**: Bumped to **v7**.
 
 ---
 

@@ -44,15 +44,15 @@ jobs:
             {
               "name": "TorrServe",
               "internalName": "TorrServe",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/TorrServe.cs3?v=6",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/TorrServe.cs3?v=7",
               "tvTypes": ["Torrent", "Movie", "TvSeries"],
               "language": "en",
               "iconUrl": "https://raw.githubusercontent.com/YouROK/TorrServer/master/server/web/public/favicon.ico",
               "apiVersion": 10,
-              "version": 6,
+              "version": 7,
               "authors": ["deepu2135"],
               "status": 1,
-              "description": "TorrServer BitTorrent streaming engine with active keep-alive, 40+ high-speed trackers, buffer tuner & seeding controls"
+              "description": "BitTorrent streaming engine"
             },
             {
               "name": "External Players",
