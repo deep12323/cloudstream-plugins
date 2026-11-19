@@ -15,6 +15,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.widget.TextView
+import androidx.collection.LruCache
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
@@ -53,6 +54,7 @@ object SystemFontManager {
     private val originalTypefaces = WeakHashMap<TextView, Typeface?>()
     private val hookedRecyclerViews = Collections.newSetFromMap(WeakHashMap<RecyclerView, Boolean>())
     private val hookedComposeViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val attachedLayoutViews = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
     // Cached pre-computed Typeface references
     @Volatile private var cachedNormal: Typeface? = null
@@ -60,29 +62,55 @@ object SystemFontManager {
     @Volatile private var cachedItalic: Typeface? = null
     @Volatile private var cachedBoldItalic: Typeface? = null
 
+    /**
+     * Intercepting LruCache that replaces TypefaceCompat.sTypefaceCache.
+     * Whenever AndroidX or AppCompat requests @font/google_sans or any other font,
+     * this cache intercepts the query and IMMEDIATELY returns the System Font.
+     * This prevents Google Sans from ever loading or being applied during layout inflations.
+     */
+    private class FontInterceptorLruCache(maxSize: Int) : LruCache<String, Typeface>(maxSize) {
+
+        override fun create(key: String): Typeface? {
+            if (!isEnabled()) return null
+            val lower = key.lowercase()
+            if (lower.contains("font") || lower.contains("sans") || lower.contains("product")) {
+                val isBold = lower.contains("bold") || lower.contains("medium") || lower.contains("black") ||
+                        lower.contains("700") || lower.contains("800")
+                val isItalic = lower.contains("italic")
+
+                return when {
+                    isBold && isItalic -> cachedBoldItalic
+                    isBold -> cachedBold
+                    isItalic -> cachedItalic
+                    else -> cachedNormal
+                } ?: cachedNormal
+            }
+            return null
+        }
+    }
+
     fun init(context: Context) {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager v8 with zero-glitch PreDraw engine.")
+        Log.d(TAG, "Initializing SystemFontManager v9 with continuous zero-glitch navigation engine.")
 
         try {
             rebuildTypefaceCache()
             patchSystemFontMap()
-            prefillTypefaceCompatCache()
+            hookTypefaceCompatCache()
             registerLifecycleCallbacks(app)
         } catch (t: Throwable) {
             Log.e(TAG, "Error in background setup: ${t.message}")
         }
 
-        // Post initial sweep to the Main Thread safely
         mainHandler.post {
             try {
                 findCurrentActivity()?.let { act ->
                     currentActivityRef = WeakReference(act)
                     act.window?.decorView?.let { decor ->
                         applyToViewTree(decor)
-                        attachOneShotPreDraw(decor)
+                        attachContinuousLayoutObserver(decor)
                     }
                 }
                 sweepAllCurrentWindows()
@@ -99,6 +127,7 @@ object SystemFontManager {
         guardianJob = null
         hookedRecyclerViews.clear()
         hookedComposeViews.clear()
+        attachedLayoutViews.clear()
         originalTypefaces.clear()
     }
 
@@ -184,32 +213,67 @@ object SystemFontManager {
     }
 
     /**
-     * Pre-populates AndroidX TypefaceCompat.sTypefaceCache with known CloudStream fonts.
+     * Replaces AndroidX TypefaceCompat.sTypefaceCache with FontInterceptorLruCache.
+     * Completely intercepts all XML font lookups at inflation time.
      */
-    private fun prefillTypefaceCompatCache() {
+    private fun hookTypefaceCompatCache() {
         try {
             val compatClass = Class.forName("androidx.core.graphics.TypefaceCompat")
             val cacheField = compatClass.getDeclaredField("sTypefaceCache")
             cacheField.isAccessible = true
-            val cacheObj = cacheField.get(null) ?: return
+            val currentCache = cacheField.get(null)
 
+            if (currentCache !is FontInterceptorLruCache) {
+                val interceptor = FontInterceptorLruCache(1024)
+                prefillCache(interceptor)
+                cacheField.set(null, interceptor)
+                Log.d(TAG, "TypefaceCompat.sTypefaceCache replaced with FontInterceptorLruCache!")
+            } else {
+                prefillCache(currentCache)
+            }
+        } catch (t: Throwable) {
+            Log.d(TAG, "TypefaceCompat cache hook fallback: ${t.message}")
+            try {
+                val compatClass = Class.forName("androidx.core.graphics.TypefaceCompat")
+                val cacheField = compatClass.getDeclaredField("sTypefaceCache")
+                cacheField.isAccessible = true
+                cacheField.get(null)?.let { prefillCache(it) }
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Proactively pre-populates all known CloudStream font keys across styles and cookies.
+     */
+    private fun prefillCache(cacheObj: Any) {
+        try {
+            val putMethod = cacheObj.javaClass.getMethod("put", Any::class.java, Any::class.java)
             val normal = cachedNormal ?: Typeface.DEFAULT
             val bold = cachedBold ?: Typeface.DEFAULT_BOLD
             val pkg = appContext?.packageName ?: "com.lagradost.cloudstream3"
 
-            val putMethod = cacheObj.javaClass.getMethod("put", Any::class.java, Any::class.java)
-
-            val knownFonts = listOf(
-                "google_sans" to 2131296259,
-                "productsans_regular" to 2131296274,
-                "productsans_medium" to 2131296272,
-                "productsans_bold" to 2131296267,
-                "productsans_black" to 2131296265,
-                "netflix_sans" to 2131296262,
-                "open_sans" to 2131296263,
-                "poppins_regular" to 2131296264,
-                "ubuntu_regular" to 2131296281
-            )
+            val knownFonts = mutableListOf<Pair<String, Int>>()
+            try {
+                val rFontClass = appContext?.classLoader?.loadClass("com.lagradost.cloudstream3.R\$font")
+                    ?: Class.forName("com.lagradost.cloudstream3.R\$font")
+                for (field in rFontClass.fields) {
+                    if (field.type == Int::class.javaPrimitiveType) {
+                        knownFonts.add(field.name to field.getInt(null))
+                    }
+                }
+            } catch (_: Throwable) {
+                knownFonts.addAll(listOf(
+                    "google_sans" to 2131296259,
+                    "productsans_regular" to 2131296274,
+                    "productsans_medium" to 2131296272,
+                    "productsans_bold" to 2131296267,
+                    "productsans_black" to 2131296265,
+                    "netflix_sans" to 2131296262,
+                    "open_sans" to 2131296263,
+                    "poppins_regular" to 2131296264,
+                    "ubuntu_regular" to 2131296281
+                ))
+            }
 
             for ((fontName, resId) in knownFonts) {
                 val isBold = fontName.contains("bold") || fontName.contains("medium") || fontName.contains("black")
@@ -221,10 +285,12 @@ object SystemFontManager {
                     else -> normal
                 }
 
-                for (style in 0..3) {
-                    putMethod.invoke(cacheObj, "$pkg-null-0-$resId-$style", tf)
-                    putMethod.invoke(cacheObj, "$pkg-res/font/$fontName.xml-0-$resId-$style", tf)
-                    putMethod.invoke(cacheObj, "$pkg-res/font/$fontName.ttf-0-$resId-$style", tf)
+                for (cookie in 0..4) {
+                    for (style in 0..3) {
+                        putMethod.invoke(cacheObj, "$pkg-null-$cookie-$resId-$style", tf)
+                        putMethod.invoke(cacheObj, "$pkg-res/font/$fontName.xml-$cookie-$resId-$style", tf)
+                        putMethod.invoke(cacheObj, "$pkg-res/font/$fontName.ttf-$cookie-$resId-$style", tf)
+                    }
                 }
             }
         } catch (_: Throwable) {}
@@ -330,30 +396,29 @@ object SystemFontManager {
     }
 
     /**
-     * Attaches a strictly one-time PreDrawListener to convert views to the system font
-     * BEFORE frame 0 is rendered to the display hardware.
-     * Immediately unregisters itself to prevent layout loops or performance overhead.
+     * Attaches a continuous OnGlobalLayoutListener to the window.
+     * Fires whenever the layout changes (navigating tabs, loading movie details, opening search),
+     * applying the font BEFORE the frame reaches the screen.
      */
-    private fun attachOneShotPreDraw(view: View) {
+    private fun attachContinuousLayoutObserver(view: View) {
+        if (!attachedLayoutViews.add(view)) return
         try {
             val vto = view.viewTreeObserver
             if (vto == null || !vto.isAlive) return
-            vto.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    try {
-                        if (vto.isAlive) {
-                            vto.removeOnPreDrawListener(this)
-                        }
-                    } catch (_: Throwable) {}
-                    applyToViewTree(view)
-                    return true
+
+            val viewRef = WeakReference(view)
+            val listener = ViewTreeObserver.OnGlobalLayoutListener {
+                val root = viewRef.get()
+                if (root != null) {
+                    applyToViewTree(root)
                 }
-            })
+            }
+            vto.addOnGlobalLayoutListener(listener)
         } catch (_: Throwable) {}
     }
 
     /**
-     * Lifecycle enforcer hooking activities and fragments before drawing occurs.
+     * Lifecycle enforcer hooking activities and fragments continuously as the user navigates.
      */
     private fun registerLifecycleCallbacks(app: Application?) {
         if (app == null || isLifecycleRegistered) return
@@ -366,7 +431,7 @@ object SystemFontManager {
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
                             applyToViewTree(decor)
-                            attachOneShotPreDraw(decor)
+                            attachContinuousLayoutObserver(decor)
                         }
                     }
                 }
@@ -376,7 +441,7 @@ object SystemFontManager {
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
                             applyToViewTree(decor)
-                            attachOneShotPreDraw(decor)
+                            attachContinuousLayoutObserver(decor)
                         }
                     }
                 }
@@ -386,6 +451,7 @@ object SystemFontManager {
                     mainHandler.post {
                         activity.window?.decorView?.let { decor ->
                             applyToViewTree(decor)
+                            attachContinuousLayoutObserver(decor)
                         }
                     }
                 }
@@ -414,15 +480,21 @@ object SystemFontManager {
                         savedInstanceState: Bundle?
                     ) {
                         applyToViewTree(v)
-                        attachOneShotPreDraw(v)
+                        attachContinuousLayoutObserver(v)
                     }
 
                     override fun onFragmentStarted(fm: FragmentManager, f: Fragment) {
-                        f.view?.let { applyToViewTree(it) }
+                        f.view?.let {
+                            applyToViewTree(it)
+                            attachContinuousLayoutObserver(it)
+                        }
                     }
 
                     override fun onFragmentResumed(fm: FragmentManager, f: Fragment) {
-                        f.view?.let { applyToViewTree(it) }
+                        f.view?.let {
+                            applyToViewTree(it)
+                            attachContinuousLayoutObserver(it)
+                        }
                     }
                 },
                 true
@@ -447,11 +519,13 @@ object SystemFontManager {
             val views = (mViewsField.get(wmg) as? List<View>)?.toList() ?: emptyList()
             for (v in views) {
                 applyToViewTree(v)
+                attachContinuousLayoutObserver(v)
             }
         } catch (_: Throwable) {}
 
-        findCurrentActivity()?.window?.decorView?.let {
-            applyToViewTree(it)
+        findCurrentActivity()?.window?.decorView?.let { decor ->
+            applyToViewTree(decor)
+            attachContinuousLayoutObserver(decor)
         }
     }
 
@@ -516,20 +590,20 @@ object SystemFontManager {
     private fun invalidateAndRefresh() {
         rebuildTypefaceCache()
         patchSystemFontMap()
-        prefillTypefaceCompatCache()
+        hookTypefaceCompatCache()
         mainHandler.post {
             sweepAllCurrentWindows()
         }
     }
 
     /**
-     * Non-intrusive background guardian checks for un-styled views every 3 seconds.
+     * Background guardian checks for un-styled views every 1 second as an extra safety backstop.
      */
     private fun startGentleGuardian() {
         guardianJob?.cancel()
         guardianJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
-                delay(3000)
+                delay(1000)
                 if (isEnabled()) {
                     mainHandler.post {
                         sweepAllCurrentWindows()
