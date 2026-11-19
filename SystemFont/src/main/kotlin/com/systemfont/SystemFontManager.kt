@@ -62,14 +62,15 @@ object SystemFontManager {
     @Volatile private var cachedItalic: Typeface? = null
     @Volatile private var cachedBoldItalic: Typeface? = null
 
+    // Reference to Compose interceptor cache to allow instant invalidation on settings change
+    @Volatile private var activeComposeLruCache: LruCache<Any, Any>? = null
+
     /**
      * Intercepting LruCache that replaces TypefaceCompat.sTypefaceCache.
      * Whenever AndroidX or AppCompat requests @font/google_sans or any other font,
      * this cache intercepts the query and IMMEDIATELY returns the System Font.
-     * This prevents Google Sans from ever loading or being applied during layout inflations.
      */
     private class FontInterceptorLruCache(maxSize: Int) : LruCache<String, Typeface>(maxSize) {
-
         override fun create(key: String): Typeface? {
             if (!isEnabled()) return null
             val lower = key.lowercase()
@@ -89,16 +90,31 @@ object SystemFontManager {
         }
     }
 
+    /**
+     * Deep Compose Interceptor LruCache replacing GlobalTypefaceRequestCache.resultCache.
+     * In CloudStream 4 (Compose Multiplatform), all screens (Home, Search, Details, Settings)
+     * query GlobalTypefaceRequestCache.runCached(TypefaceRequest) to render text.
+     * By dynamically returning TypefaceResult.Immutable(systemTypeface) upon request,
+     * Compose renders all text directly in the device's native System Font from frame 0!
+     */
+    private class ComposeFontInterceptorLruCache(maxSize: Int) : LruCache<Any, Any>(maxSize) {
+        override fun create(key: Any): Any? {
+            if (!isEnabled()) return null
+            return createComposeTypefaceResult(key)
+        }
+    }
+
     fun init(context: Context) {
         val app = resolveApplication(context)
         appContext = app ?: context.applicationContext
 
-        Log.d(TAG, "Initializing SystemFontManager v9 with continuous zero-glitch navigation engine.")
+        Log.d(TAG, "Initializing SystemFontManager v10 with deep Jetpack Compose & View engine.")
 
         try {
             rebuildTypefaceCache()
             patchSystemFontMap()
             hookTypefaceCompatCache()
+            hookComposeTypefaceCache()
             registerLifecycleCallbacks(app)
         } catch (t: Throwable) {
             Log.e(TAG, "Error in background setup: ${t.message}")
@@ -213,8 +229,136 @@ object SystemFontManager {
     }
 
     /**
-     * Replaces AndroidX TypefaceCompat.sTypefaceCache with FontInterceptorLruCache.
-     * Completely intercepts all XML font lookups at inflation time.
+     * Engine 1 (Compose): Intercepts Jetpack Compose Multiplatform font resolution.
+     * Replaces GlobalTypefaceRequestCache.resultCache with ComposeFontInterceptorLruCache.
+     */
+    private fun hookComposeTypefaceCache() {
+        try {
+            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+            val resolverKtClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.FontFamilyResolverKt")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.FontFamilyResolverKt")
+            }
+
+            val globalCacheField = resolverKtClass.getDeclaredField("GlobalTypefaceRequestCache")
+            globalCacheField.isAccessible = true
+            val globalCache = globalCacheField.get(null) ?: return
+
+            val resultCacheField = globalCache.javaClass.declaredFields.firstOrNull { f ->
+                LruCache::class.java.isAssignableFrom(f.type) || f.name.contains("resultCache")
+            } ?: globalCache.javaClass.getDeclaredField("resultCache")
+            resultCacheField.isAccessible = true
+
+            val currentLru = resultCacheField.get(globalCache)
+            if (currentLru !is ComposeFontInterceptorLruCache) {
+                val interceptor = ComposeFontInterceptorLruCache(1024)
+                resultCacheField.set(globalCache, interceptor)
+                activeComposeLruCache = interceptor
+                Log.d(TAG, "Compose GlobalTypefaceRequestCache successfully intercepted with ComposeFontInterceptorLruCache!")
+            } else {
+                activeComposeLruCache = currentLru
+            }
+
+            // Evict any async cache entries
+            try {
+                val asyncCacheField = resolverKtClass.getDeclaredField("GlobalAsyncTypefaceCache")
+                asyncCacheField.isAccessible = true
+                val asyncCache = asyncCacheField.get(null)
+                if (asyncCache != null) {
+                    for (f in asyncCache.javaClass.declaredFields) {
+                        f.isAccessible = true
+                        val map = f.get(asyncCache) ?: continue
+                        val clearMethod = map.javaClass.methods.firstOrNull { it.name == "clear" || it.name == "evictAll" }
+                        clearMethod?.invoke(map)
+                    }
+                }
+            } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            Log.d(TAG, "Compose font cache hook fallback: ${t.message}")
+        }
+    }
+
+    /**
+     * Inspects a Compose TypefaceRequest object and resolves whether Bold or Italic is needed.
+     */
+    private fun resolveTypefaceFromComposeRequest(request: Any): Typeface {
+        var isBold = false
+        var isItalic = false
+
+        try {
+            for (field in request.javaClass.declaredFields) {
+                field.isAccessible = true
+                val value = field.get(request) ?: continue
+                val typeName = field.type.name
+
+                if (typeName.contains("FontWeight") || value.javaClass.name.contains("FontWeight")) {
+                    val weightField = value.javaClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
+                    if (weightField != null) {
+                        weightField.isAccessible = true
+                        val weight = weightField.getInt(value)
+                        if (weight >= 600) isBold = true
+                    }
+                } else if (typeName.contains("FontStyle") || value.javaClass.name.contains("FontStyle")) {
+                    val str = value.toString().lowercase()
+                    if (str.contains("italic") || str.contains("1")) {
+                        isItalic = true
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // Fallback string check
+        val str = request.toString()
+        if (!isBold && (str.contains("FontWeight(weight=700") || str.contains("FontWeight(weight=800") ||
+                    str.contains("FontWeight(weight=900") || str.contains("W700") || str.contains("W800") ||
+                    str.contains("W900") || str.contains("Bold") || str.contains("Medium"))) {
+            isBold = true
+        }
+        if (!isItalic && (str.contains("Italic") || str.contains("FontStyle(value=1)"))) {
+            isItalic = true
+        }
+
+        return when {
+            isBold && isItalic -> cachedBoldItalic
+            isBold -> cachedBold
+            isItalic -> cachedItalic
+            else -> cachedNormal
+        } ?: cachedNormal ?: Typeface.DEFAULT
+    }
+
+    /**
+     * Wraps the resolved System Typeface in a TypefaceResult.Immutable object for Jetpack Compose.
+     */
+    private fun createComposeTypefaceResult(request: Any): Any? {
+        val tf = resolveTypefaceFromComposeRequest(request)
+        return try {
+            val classLoader = appContext?.classLoader ?: ClassLoader.getSystemClassLoader()
+            val immutableClass = try {
+                classLoader.loadClass("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+            } catch (_: Throwable) {
+                Class.forName("androidx.compose.ui.text.font.TypefaceResult\$Immutable")
+            }
+
+            val constructor = immutableClass.declaredConstructors.firstOrNull { c ->
+                val p = c.parameterTypes
+                (p.size == 2 && p[0] == Any::class.java) || (p.size == 1 && p[0] == Any::class.java)
+            } ?: immutableClass.declaredConstructors.first()
+            constructor.isAccessible = true
+
+            if (constructor.parameterTypes.size == 2) {
+                constructor.newInstance(tf, true)
+            } else {
+                constructor.newInstance(tf)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error creating TypefaceResult.Immutable: ${t.message}")
+            null
+        }
+    }
+
+    /**
+     * Engine 2 (Android Views): Intercepts AndroidX TypefaceCompat.sTypefaceCache.
      */
     private fun hookTypefaceCompatCache() {
         try {
@@ -563,7 +707,7 @@ object SystemFontManager {
             }
         }
 
-        // Support for Jetpack Compose views (Settings, etc.)
+        // Support for Jetpack Compose root views (AndroidComposeView, etc.)
         if (view.javaClass.name.contains("AndroidComposeView") || view.javaClass.name.contains("ComposeView")) {
             if (hookedComposeViews.add(view)) {
                 view.invalidate()
@@ -591,6 +735,9 @@ object SystemFontManager {
         rebuildTypefaceCache()
         patchSystemFontMap()
         hookTypefaceCompatCache()
+        activeComposeLruCache?.evictAll()
+        hookComposeTypefaceCache()
+        hookedComposeViews.forEach { it.invalidate() }
         mainHandler.post {
             sweepAllCurrentWindows()
         }

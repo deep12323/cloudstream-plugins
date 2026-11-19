@@ -37,7 +37,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
-| **System Font** | `SystemFont` | **`9`** | Forces CloudStream to adopt device's native system font with continuous navigation engine & TypefaceCompat LruCache hook |
+| **System Font** | `SystemFont` | **`10`** | Deep Jetpack Compose Multiplatform & View font interception engine |
 
 ---
 
@@ -114,14 +114,14 @@ flowchart LR
 
 ---
 
-### 7. SystemFont: Native System Font Enforcer & Zero-Glitch Engine (v9)
-* **Problem**: In previous versions, navigating between screens (Home -> Search -> Movie Details) or scrolling dynamically inflated views and bound viewholders in Google Sans, causing a visible font flicker or 1-3 second delay before the background guardian styled them.
-* **Architecture & Continuous Zero-Glitch Navigation Engine (v9)**:
-  1. **Dynamic `FontInterceptorLruCache` Replacement**: Subclasses `androidx.collection.LruCache<String, Typeface>` and directly replaces `TypefaceCompat.sTypefaceCache`. Whenever AndroidX or `AppCompatTextHelper` requests `@font/google_sans`, it dynamically returns the target System Font on demand across all resource IDs, styles, and cookies. Views are instantiated with the System Font from birth.
-  2. **Comprehensive Proactive Pre-population**: Pre-populates all font keys across all asset cookies (`0..4`) and styles (`0..3`) so lookups never fall back to parsing `google_sans.xml`.
-  3. **Continuous `OnGlobalLayoutListener` Window & Fragment Hooks**: Replaced fragile one-shot predraw listeners with continuous `OnGlobalLayoutListener` observers on all active DecorViews and Fragment views. Whenever navigating, changing tabs, or loading lists, the layout changes trigger synchronous font styling BEFORE frames reach the display hardware.
-  4. **Strict Reference Equality Guard (`===`)**: Skips already styled views in 0 nanoseconds, guaranteeing zero layout loops, zero CPU overhead, and 120 FPS performance.
-  5. **1-Second Guardian Loop**: Reduced guardian loop interval from 3s to 1s as a rapid safety net.
+### 7. SystemFont: Deep Jetpack Compose Multiplatform & View Engine (v10)
+* **Problem**: CloudStream 4 Prerelease (`com.lagradost.cloudstream3.prerelease`) is written in Jetpack Compose Multiplatform. Screens (Home, Search, Details, Settings) render text using Compose's `AppFont.googleSans` via internal canvas drawing rather than traditional Android `TextView`s. Traditional view traversal was unable to intercept Compose canvas text before rendering.
+* **Architecture & Deep Compose Engine (v10)**:
+  1. **Compose `GlobalTypefaceRequestCache` Replacement**: Injected `ComposeFontInterceptorLruCache` directly into Compose's internal `GlobalTypefaceRequestCache.resultCache`. Whenever Compose evaluates any `TypefaceRequest` (`headlineLarge`, `titleMedium`, `bodyMedium`, `labelSmall`), our cache dynamically creates and returns `TypefaceResult.Immutable` wrapping the device's native System Font (`MiSans` / System Font). Compose renders all text natively in the device font from frame 0 with 0ms delay and zero font jump.
+  2. **Compose Weight & Style Resolution**: Reflects on Compose's `FontWeight` (`>= 600`) and `FontStyle` to map bold/italic requests accurately to `cachedBold`, `cachedItalic`, `cachedBoldItalic`, and `cachedNormal`.
+  3. **AndroidX `TypefaceCompat.sTypefaceCache` Font Interceptor**: Replaced AndroidX's `sTypefaceCache` with `FontInterceptorLruCache` (capacity 1024) to intercept all XML font lookups (`google_sans`, `productsans_*`).
+  4. **Continuous `OnGlobalLayoutListener`**: Keeps continuous window observers on all DecorViews and Fragment views for continuous coverage during navigation transitions.
+  5. **Native `Typeface.sSystemFontMap` Patching**: Overwrites JVM font family table with system font aliases.
 
 ---
 
