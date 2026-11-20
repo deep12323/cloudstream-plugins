@@ -4,7 +4,8 @@
 /.idea
 .DS_Store
 /build
-/builds
+/builds/*
+!/builds/*.cs3
 **/build
 /captures
 .externalNativeBuild
