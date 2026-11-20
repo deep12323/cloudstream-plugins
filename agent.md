@@ -1,4 +1,3 @@
-always update this agent.md file after making changes in any extension
 # Development Progress & Engineering Log
 
 ## 📌 Overview
@@ -36,7 +35,7 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`4`** | Movies & TV series with HubCloud extraction sorted by decreasing file size |
+| **MoviesDrive** | `MoviesDrive` | **`5`** | Movies & TV series with HubCloud/GDFlix extraction, Pixeldrain Bypass & mirror search |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -89,7 +88,30 @@ flowchart LR
 
 ---
 
-### 5. ExternalPlayers: Custom & Manual External Players Manager + mpvEx & Defaults (v3 & v4)
+### 5. MoviesDrive: Domain Update, Search Recovery, GDFlix Extraction & Pixeldrain Bypass (v5)
+* **Problem**: 
+  1. Search stopped functioning completely across MoviesDrive with connection resets.
+  2. Several stream links failed to load, threw 404 playback errors, or crashed video players.
+  3. PixelDrain links were bandwidth-capped or failing without bypass support.
+* **Root Causes & Solutions**:
+  1. **Active Domain Migration**: Migrated `mainUrl` from deprecated `new3.moviesdrive.cyou` (connection reset) to active `new4.moviesdrive.cyou`.
+  2. **Search Recovery & Mirror Fallback**:
+     * Primary: High-speed Typesense JSON search (`/search.php?q=...&page=...`).
+     * Secondary: WordPress REST API (`/wp-json/wp/v2/posts?search=...`).
+     * Tertiary: Active mirror search via `moviesdrives.bid` if `mainUrl` encounters network blocks.
+     * Fourth: HTML search fallback.
+  3. **Telegram Link Filtering**: Fixed regex in `HubCloudExtractor` that previously matched `hubcloud.mov/tg/go?id=...` ("Download From Telegram") and emitted Telegram channel invite URLs as `10Gbps` video streams, causing player crashes. Added strict validation ensuring only legitimate video streams (`googleusercontent.com`, `drive.google.com`, `.mkv`, `.mp4`) are emitted.
+  4. **Pixeldrain Bypass Support**: Added integration for Pixeldrain bypass proxy via `https://cdn.pixeldrain.eu.cc/$fileId?download` (referencing GreasyFork script 551766), bypassing daily download/bandwidth limits and streaming directly as `PixelDrain Fast (Bypass)`. Filtered out recurring dummy fake IDs (such as `negn6f`) that return 404.
+  5. **Native GDFlix & only-apis Extractor Support**:
+     * Implemented `resolveGDFlix` and registered `MoviesDriveGDFlix` extractor API (`gdflix.vip`, `new10.gdflix.io`, `only-apis.com`).
+     * Extracts direct Cloudflare R2 storage streams (`fastcdn-dl.pages.dev/?url=...` and `.r2.dev`), Instant 10Gbps Google CDN streams (`workers.dev`, `instadl.rest`), and PixelDrain with bypass.
+     * Updated `loadLinks` to extract both HubCloud and GDFlix links concurrently from `mdrive` archives.
+  6. **TV Series Episode Parsing Enhancement**: Expanded episode regex to `(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b` to correctly parse `E01`, `EP-01`, `EP.01`, etc. across all season archives.
+  7. **Version Bump**: Bumped to **v5**.
+
+---
+
+### 6. ExternalPlayers: Custom & Manual External Players Manager + mpvEx & Defaults (v3 & v4)
 * **Feature (v3)**: Add setting in External Players to manually add external players, keep default players (MPV Infinity, mpvEx, 1DM) added by default, and allow removing any players (both built-in defaults and custom ones).
 * **Metadata Cleanup (v4)**: Stripped clutter from the repository display name and description. Changed title to cleanly read `External Players` and description to `External video players integration`.
 * **Architecture & Features**:

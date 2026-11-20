@@ -17,7 +17,7 @@ import java.net.URLEncoder
 import java.util.Collections
 
 class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI() {
-    override var mainUrl = "https://new3.moviesdrive.cyou"
+    override var mainUrl = "https://new4.moviesdrive.cyou"
     override var name = "MoviesDrive"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -214,7 +214,46 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             e.printStackTrace()
         }
 
-        // 3. Fallback to HTML search
+        // 3. Fallback: Official mirror search (moviesdrives.bid)
+        val mirrorBase = "https://moviesdrives.bid"
+        try {
+            val mirrorTs = "$mirrorBase/search.php?q=$encodedQuery&page=$page"
+            val response = app.get(mirrorTs, headers = requestHeaders, timeout = 12L)
+            if (response.isSuccessful && response.text.trim().startsWith("{")) {
+                val tsData: TypesenseResponse = mapper.readValue(response.text)
+                val hits = tsData.hits ?: emptyList()
+                val items = hits.mapNotNull { hit ->
+                    val doc = hit.document ?: return@mapNotNull null
+                    val rawTitle = doc.post_title ?: return@mapNotNull null
+                    val permalink = doc.permalink ?: return@mapNotNull null
+                    val fullUrl = if (permalink.startsWith("http")) permalink else "$mainUrl${if (permalink.startsWith("/")) "" else "/"}$permalink"
+                    val title = cleanTitle(rawTitle)
+                    val isSeries = isTvSeries(rawTitle, fullUrl)
+                    val year = extractYear(rawTitle)
+                    val posterUrl = doc.post_thumbnail
+
+                    if (isSeries) {
+                        newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
+                            this.posterUrl = posterUrl
+                            this.year = year
+                        }
+                    } else {
+                        newMovieSearchResponse(title, fullUrl, TvType.Movie) {
+                            this.posterUrl = posterUrl
+                            this.year = year
+                        }
+                    }
+                }
+                if (items.isNotEmpty()) {
+                    val found = tsData.found ?: 0
+                    return newSearchResponseList(items, (page * 15) < found)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 4. Fallback to HTML search
         val htmlUrl = if (page <= 1) "$mainUrl/?s=$encodedQuery" else "$mainUrl/page/$page/?s=$encodedQuery"
         try {
             val response = app.get(htmlUrl, headers = requestHeaders, timeout = 15L)
@@ -297,7 +336,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     currentSeason = seasonMatch.groupValues[1].toIntOrNull() ?: currentSeason
                 }
 
-                val anchors = elem.select("a[href*='mdrive.'], a[href*='hubcloud.'], a[href*='gdflix.'], a[href*='only-apis.com']")
+                val anchors = elem.select("a[href*='mdrive.'], a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                 for (anchor in anchors) {
                     val href = anchor.attr("href").trim()
                     val linkText = anchor.text().trim()
@@ -353,7 +392,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
                                                     for (el in epElems) {
                                                         val elText = el.text()
-                                                        val epMatch = Regex("""(?i)\b(?:EP|Episode)\s*0*(\d+)\b""").find(elText)
+                                                        val epMatch = Regex("""(?i)(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b""").find(elText)
                                                         if (epMatch != null) {
                                                             currentEpNum = epMatch.groupValues[1].toIntOrNull() ?: currentEpNum
                                                             val qMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(elText)?.value
@@ -362,7 +401,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                                             if (sMatch != null) currentSize = sMatch
                                                         }
 
-                                                        val links = el.select("a[href*='hubcloud.'], a[href*='gdflix.'], a[href*='only-apis.com']")
+                                                        val links = el.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                                                         for (link in links) {
                                                             val h = link.attr("href").trim()
                                                             val t = link.text().trim()
@@ -386,7 +425,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
                                                     // Fallback if no EP headings in doc: map sequentially
                                                     if (!seasonEpDownloadsMap.containsKey(1)) {
-                                                        val allEpAnchors = epDoc.select("a[href*='hubcloud.'], a[href*='gdflix.'], a[href*='only-apis.com']")
+                                                        val allEpAnchors = epDoc.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                                                         for ((idx, anchor) in allEpAnchors.withIndex()) {
                                                             val h = anchor.attr("href").trim()
                                                             val t = anchor.text().trim()
@@ -562,9 +601,10 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
         fun getServerPriority(source: String): Int {
             val s = source.lowercase()
             return when {
-                s.contains("fsl") -> 4
-                s.contains("10gbps") -> 3
-                s.contains("fast") || s.contains("stream") -> 2
+                s.contains("10gbps") -> 5
+                s.contains("fsl") || s.contains("r2") -> 4
+                s.contains("fast") || s.contains("stream") -> 3
+                s.contains("bypass") -> 2
                 s.contains("pixeldrain") -> 1
                 else -> 0
             }
@@ -587,15 +627,31 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     val itemUrl = item.url
                     if (itemUrl.contains("mdrive.")) {
                         try {
-                            val archiveResp = app.get(itemUrl, headers = requestHeaders, timeout = 10L)
+                            val archiveResp = app.get(itemUrl, headers = requestHeaders, timeout = 12L)
                             if (archiveResp.isSuccessful) {
                                 val archiveDoc = archiveResp.document
                                 val hubLinks = archiveDoc.select("a[href*='hubcloud'], a[href*='hubc']")
-                                for (hubLink in hubLinks) {
-                                    val hubUrl = hubLink.attr("href")
-                                    if (hubUrl.isNotBlank()) {
-                                        MoviesDriveHubCloud.resolveHubCloud(hubUrl, item.name, item.quality, item.size, itemCollector)
+                                val gdflixLinks = archiveDoc.select("a[href*='gdflix'], a[href*='only-apis']")
+
+                                coroutineScope {
+                                    val t1 = async {
+                                        for (hubLink in hubLinks) {
+                                            val hubUrl = hubLink.attr("href")
+                                            if (hubUrl.isNotBlank()) {
+                                                MoviesDriveHubCloud.resolveHubCloud(hubUrl, item.name, item.quality, item.size, itemCollector)
+                                            }
+                                        }
                                     }
+                                    val t2 = async {
+                                        for (gdfLink in gdflixLinks) {
+                                            val gdfUrl = gdfLink.attr("href")
+                                            if (gdfUrl.isNotBlank()) {
+                                                MoviesDriveHubCloud.resolveGDFlix(gdfUrl, item.name, item.quality, item.size, itemCollector)
+                                            }
+                                        }
+                                    }
+                                    t1.await()
+                                    t2.await()
                                 }
                             }
                         } catch (e: Exception) {
@@ -603,6 +659,8 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                         }
                     } else if (itemUrl.contains("hubcloud") || itemUrl.contains("hubc")) {
                         MoviesDriveHubCloud.resolveHubCloud(itemUrl, item.name, item.quality, item.size, itemCollector)
+                    } else if (itemUrl.contains("gdflix") || itemUrl.contains("only-apis")) {
+                        MoviesDriveHubCloud.resolveGDFlix(itemUrl, item.name, item.quality, item.size, itemCollector)
                     } else {
                         loadExtractor(itemUrl, subtitleCallback, itemCollector)
                     }

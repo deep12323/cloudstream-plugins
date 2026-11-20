@@ -5,16 +5,16 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
 }
 
-version = 4
+version = 5
 
 cloudstream {
-    description = "Stream movies & TV series from MoviesDrive (HubCloud direct R2 & Google CDN streams)"
+    description = "Stream movies & TV series from MoviesDrive (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"
     authors = listOf("deepu2135")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     requiresResources = false
     language = "en"
-    iconUrl = "https://new3.moviesdrive.cyou/wp-content/uploads/2026/01/log.png"
+    iconUrl = "https://new4.moviesdrive.cyou/wp-content/uploads/2026/01/log.png"
 }
 
 android {

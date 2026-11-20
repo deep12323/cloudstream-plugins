@@ -32,5 +32,6 @@ class MoviesDrivePlugin : Plugin() {
         pluginContext = context
         registerMainAPI(MoviesDriveProvider(context))
         registerExtractorAPI(MoviesDriveHubCloud())
+        registerExtractorAPI(MoviesDriveGDFlix())
     }
 }

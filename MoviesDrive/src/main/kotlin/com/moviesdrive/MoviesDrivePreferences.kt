@@ -89,7 +89,7 @@ object MoviesDrivePreferences {
         saveCategories(context, DEFAULT_CATEGORIES)
     }
 
-    fun getActiveCategories(context: Context?, baseUrl: String = "https://new3.moviesdrive.cyou"): List<MainPageData> {
+    fun getActiveCategories(context: Context?, baseUrl: String = "https://new4.moviesdrive.cyou"): List<MainPageData> {
         val categories = getCategories(context).filter { it.isEnabled }
         val list = if (categories.isEmpty()) DEFAULT_CATEGORIES else categories
 
