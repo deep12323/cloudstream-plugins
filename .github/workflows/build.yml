@@ -24,7 +24,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Providers
-        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :SystemFont:make
+        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :DesireMovies:make :SystemFont:make
 
       - name: Generate repo.json and plugins.json
         run: |
@@ -131,6 +131,19 @@ jobs:
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream movies & TV series from MoviesDrive (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"
+            },
+            {
+              "name": "DesireMovies",
+              "internalName": "DesireMovies",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/DesireMovies.cs3?v=1",
+              "tvTypes": ["Movie", "TvSeries"],
+              "language": "en",
+              "iconUrl": "https://1desiremovies.xyz/wp-content/uploads/2023/04/cropped-image_processing20210911-26622-fplmvm-192x192.png",
+              "apiVersion": 10,
+              "version": 1,
+              "authors": ["deepu2135"],
+              "status": 1,
+              "description": "Stream movies & TV series from DesireMovies (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"
             },
             {
               "name": "System Font",

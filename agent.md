@@ -36,6 +36,7 @@ flowchart LR
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`9`** | Movies & TV series with Multi-Episode Archive Fix, Season-Labeled Zip Packs & Clutter-Free Metadata |
+| **DesireMovies** | `DesireMovies` | **`1`** | Stream movies & TV series from DesireMovies with Auto-Domain Updates, Clean Audio Tags & Hierarchical Size Sorting |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -280,6 +281,42 @@ flowchart LR
      * Clean toggle labels: `Disable Seeding` and `Disk Cache`.
      * Concise action buttons (`Cancel` and `Save`) and minimal toast (`Settings saved`).
   4. **Version**: Bumped to **v7**.
+
+---
+
+### 11. DesireMovies: New Provider Implementation (v1)
+* **Goal**: Build a complete, standalone CloudStream plugin for DesireMovies (`https://desiremovies.my/` landing hub and `https://1desiremovies.xyz/` active WordPress site) supporting movies, series, zip packs, auto-domain migration, and high-speed multi-hoster stream extractors.
+* **Features & Implementation**:
+  1. **Dual-Domain & Auto-Domain Recovery**:
+     * Primary active domain: `https://1desiremovies.xyz`.
+     * Official landing hub: `https://desiremovies.my/`. If active domain changes, the provider automatically scrapes the landing page for new mirrors, verifies `/wp-json/`, and updates the persistent domain configuration in `DesireMoviesPreferences`.
+     * GitHub Remote Config fallback: Probes `desiremovies_domain.txt` on the repository master branch for instant remote domain updates without app updates.
+     * Sequential probing fallback: Probes `1desiremovies.xyz` through `5desiremovies.xyz` and alternate TLDs (`.beauty`, `.org`, `.trade`, `.vip`).
+  2. **Clean Minimalistic Metadata**:
+     * Clean Title: Strips site branding (`Desiremovies`, `.my`, `.xyz`), codec buzzwords (`4K`, `1080p`, `720p`, `HEVC`, `x264`, `x265`, `WEB-HDRip`, `BluRay`), OTT tags (`Netflix`, `Hotstar`, `Amazon`, `Zee5`), and standalone years.
+     * Prominent Audio Language Tag: Extracts exact audio tracks (`Language : ...` or title brackets) and tags the item with `Audio: <Languages>` (e.g., `Audio: Hindi, Telugu`) and formats it at the very top of the synopsis: `🔊 Audio: Hindi, Telugu`.
+     * Clutter-Free Plot: Strips screenshot links, telegram promos, and repeated title lines.
+     * Extracts IMDb score, genre tags, and cast members.
+  3. **TV Series & Zip Pack Handling**:
+     * Scans `.entry-content` elements sequentially to detect Season numbers (`Season 1`, `Season 2`), Episode ranges (`EP 1 TO 4`, `EP 5 TO 8`) and single episodes (`EP 76`).
+     * Associates qualities and file sizes with each episode.
+     * Detects Zip packs and allocates them under Season 0 / Specials with clear labels: `📦 [ZIP PACK] • Season $seasonNum • $quality [$size]`.
+  4. **Multi-Server Stream Extraction & Descending Size Sorting**:
+     * Resolves gateway links (`gyanigurus.online/view/...`) into direct lockers: HubCloud (`hubcloud.mov`), GDFlix (`gdflix.vip` / `new10.gdflix.io`), and HubDrive (`hubdrive.blog`).
+     * Extracts direct streams:
+       * **HubCloud FSL** (Cloudflare R2 Direct Video)
+       * **HubCloud 10Gbps** (Google CDN high-speed streams via gpdl/pixel)
+       * **HubCloud Stream** (HBPlay player base64)
+       * **PixelDrain Fast** (Unlimited speed via `cdn.pixeldrain.eu.cc` bypass)
+       * **PixelDrain** (Direct API fallback)
+       * **GDFlix R2** (Direct Cloudflare Storage)
+       * **GDFlix 10Gbps** (Google CDN via workers.dev)
+     * All stream options are strictly sorted by **decreasing file size**, then quality (4K > 1080p > 720p > 480p), then server priority.
+  5. **Fast Search & Paginated Catalogue**:
+     * Primary search: High-speed WordPress REST API (`/wp-json/wp/v2/posts?search=...&page=...&per_page=20`).
+     * Secondary search: Clean HTML search route (`/search/{query}/page/{page}/`), cleanly bypassing WAF bot blocks on `?s=`.
+     * 13 Home catalogue categories (Latest, Bollywood, South Hindi, Hollywood Hindi/English, Web Series, Korean Hindi, Punjabi, etc.) configurable and toggleable via `DesireMoviesSettingsFragment`.
+  6. **Version**: Initial release **v1**.
 
 ---
 
