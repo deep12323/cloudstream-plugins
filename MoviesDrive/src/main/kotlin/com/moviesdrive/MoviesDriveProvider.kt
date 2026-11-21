@@ -638,47 +638,80 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                                 val epResp = app.get(archive.url, headers = requestHeaders, timeout = 12L)
                                                 if (epResp.isSuccessful) {
                                                     val epDoc = epResp.document
-                                                    val epContent = epDoc.selectFirst(".entry-content, .page-body") ?: epDoc
-                                                    val epElems = epContent.select("h1, h2, h3, h4, h5, h6, p, div")
-
-                                                    var currentEpNum = 1
-                                                    var currentQuality = archive.quality
-                                                    var currentSize: String? = null
                                                     val seenLinksInArchive = mutableSetOf<String>()
 
-                                                    for (el in epElems) {
-                                                        val elText = el.text()
-                                                        val epMatch = Regex("""(?i)(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b""").find(elText)
+                                                    // Method 1: Split archive by <hr> tags (standard layout on mdrive.lol archives)
+                                                    val sections = epDoc.html().split(Regex("""(?i)<hr[^>]*>"""))
+                                                    for (sec in sections) {
+                                                        val secDoc = Jsoup.parseBodyFragment(sec)
+                                                        val secText = secDoc.text()
+                                                        val epMatch = Regex("""(?i)(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b""").find(secText)
                                                         if (epMatch != null) {
-                                                            currentEpNum = epMatch.groupValues[1].toIntOrNull() ?: currentEpNum
-                                                            val qMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(elText)?.value
-                                                            if (qMatch != null) currentQuality = qMatch
-                                                            val sMatch = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(elText)?.groupValues?.get(1)
-                                                            if (sMatch != null) currentSize = sMatch
-                                                        }
-
-                                                        val links = el.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
-                                                        for (link in links) {
-                                                            val h = link.attr("href").trim()
-                                                            if (h.isNotBlank() && h.startsWith("http") && seenLinksInArchive.add(h)) {
-                                                                val itemDl = MovieDownloadLink(
-                                                                    name = "Episode $currentEpNum",
-                                                                    url = h,
-                                                                    quality = currentQuality,
-                                                                    size = currentSize
-                                                                )
-                                                                synchronized(seasonEpDownloadsMap) {
-                                                                    seasonEpDownloadsMap.getOrPut(currentEpNum) { mutableListOf() }.add(itemDl)
-                                                                    if (currentQuality != null) {
-                                                                        seasonEpQualitiesMap.getOrPut(currentEpNum) { mutableSetOf() }.add(currentQuality)
+                                                            val epNum = epMatch.groupValues[1].toIntOrNull() ?: continue
+                                                            val qMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(secText)?.value
+                                                            val sMatch = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(secText)?.groupValues?.get(1)
+                                                            val links = secDoc.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
+                                                            for (link in links) {
+                                                                val h = link.attr("href").trim()
+                                                                if (h.isNotBlank() && h.startsWith("http") && seenLinksInArchive.add(h)) {
+                                                                    val itemDl = MovieDownloadLink(
+                                                                        name = "Episode $epNum",
+                                                                        url = h,
+                                                                        quality = qMatch ?: archive.quality,
+                                                                        size = sMatch ?: archive.size
+                                                                    )
+                                                                    synchronized(seasonEpDownloadsMap) {
+                                                                        seasonEpDownloadsMap.getOrPut(epNum) { mutableListOf() }.add(itemDl)
+                                                                        val q = qMatch ?: archive.quality
+                                                                        if (q != null) seasonEpQualitiesMap.getOrPut(epNum) { mutableSetOf() }.add(q)
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }
 
-                                                    // Fallback if no EP headings in doc: map sequentially
-                                                    if (!seasonEpDownloadsMap.containsKey(1)) {
+                                                    // Method 2: Fallback to leaf elements (excluding container divs) if <hr> didn't catch links
+                                                    if (seenLinksInArchive.isEmpty()) {
+                                                        val epContent = epDoc.selectFirst(".entry-content, .page-body") ?: epDoc
+                                                        val leafElements = epContent.select("h1, h2, h3, h4, h5, h6, p").filter { it.select("h1, h2, h3, h4, h5, h6, p").isEmpty() }
+                                                        var currentEpNum = 1
+                                                        var currentQuality = archive.quality
+                                                        var currentSize = archive.size
+
+                                                        for (el in leafElements) {
+                                                            val elText = el.text()
+                                                            val epMatch = Regex("""(?i)(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b""").find(elText)
+                                                            if (epMatch != null) {
+                                                                currentEpNum = epMatch.groupValues[1].toIntOrNull() ?: currentEpNum
+                                                                val qMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(elText)?.value
+                                                                if (qMatch != null) currentQuality = qMatch
+                                                                val sMatch = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(elText)?.groupValues?.get(1)
+                                                                if (sMatch != null) currentSize = sMatch
+                                                            }
+
+                                                            val links = el.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
+                                                            for (link in links) {
+                                                                val h = link.attr("href").trim()
+                                                                if (h.isNotBlank() && h.startsWith("http") && seenLinksInArchive.add(h)) {
+                                                                    val itemDl = MovieDownloadLink(
+                                                                        name = "Episode $currentEpNum",
+                                                                        url = h,
+                                                                        quality = currentQuality,
+                                                                        size = currentSize
+                                                                    )
+                                                                    synchronized(seasonEpDownloadsMap) {
+                                                                        seasonEpDownloadsMap.getOrPut(currentEpNum) { mutableListOf() }.add(itemDl)
+                                                                        if (currentQuality != null) {
+                                                                            seasonEpQualitiesMap.getOrPut(currentEpNum) { mutableSetOf() }.add(currentQuality)
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Method 3: Fallback if no EP headings in doc: map sequentially
+                                                    if (seasonEpDownloadsMap.isEmpty()) {
                                                         val allEpAnchors = epDoc.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                                                         for ((idx, anchor) in allEpAnchors.withIndex()) {
                                                             val h = anchor.attr("href").trim()
@@ -757,21 +790,23 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     }
                 }
 
-                // Add Zip packs in Season 0 / Specials
+                // Add Zip packs in Season 0 / Specials, clearly displaying the Season name!
                 val zipPacks = scrapedDownloads.filter { it.isZip }.sortedWith(
-                    compareByDescending<ScrapedDownload> {
-                        MoviesDriveHubCloud.parseSizeToBytes(it.size ?: it.text, MoviesDriveHubCloud.getQualityInt(it.quality ?: it.text))
-                    }
+                    compareByDescending<ScrapedDownload> { it.season }
+                        .thenByDescending {
+                            MoviesDriveHubCloud.parseSizeToBytes(it.size ?: it.text, MoviesDriveHubCloud.getQualityInt(it.quality ?: it.text))
+                        }
                 )
                 for ((idx, pack) in zipPacks.withIndex()) {
                     val packPayload = mapper.writeValueAsString(
                         listOf(MovieDownloadLink(name = "Zip Pack", url = pack.url, quality = pack.quality, size = pack.size))
                     )
+                    val seasonLabel = if (pack.season > 0) "Season ${pack.season}" else "Full Series"
                     val resStr = if (!pack.quality.isNullOrBlank()) " • ${pack.quality}" else ""
                     val sizeStr = if (!pack.size.isNullOrBlank()) " [${pack.size}]" else ""
                     episodesList.add(
                         newEpisode(packPayload) {
-                            this.name = "📦 [ZIP PACK]$resStr$sizeStr".trim()
+                            this.name = "📦 [ZIP PACK] • $seasonLabel$resStr$sizeStr".trim()
                             this.season = 0
                             this.episode = idx + 1
                             this.posterUrl = posterUrl

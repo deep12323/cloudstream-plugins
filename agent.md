@@ -35,7 +35,7 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`8`** | Movies & TV series with HubCloud/GDFlix extraction, Audio Tag, Clutter-Free Metadata & Auto Domain Updates |
+| **MoviesDrive** | `MoviesDrive` | **`9`** | Movies & TV series with Multi-Episode Archive Fix, Season-Labeled Zip Packs & Clutter-Free Metadata |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -163,6 +163,22 @@ flowchart LR
   3. **Isolated Genre & Cast Extraction**:
      * Stops extraction before adjacent field delimiters (`Country:`, `Language:`, `Stars:`, `Quality:`, `Director:`, `Storyline:`), keeping genres strictly to film genres (`Animation`, `Drama`, `History`) and actors strictly to valid cast names.
   4. **Version Bump**: Bumped to **v8** across `MoviesDrive/build.gradle.kts`, `.github/workflows/build.yml`, and `agent.md`.
+
+---
+
+### 9. MoviesDrive: Multi-Episode Archive Fix & Season-Labeled Zip Packs (v9)
+* **Problem**:
+  1. For TV series (e.g. *Reacher*, *Dhindora*), only 1 episode was appearing because an outer container `<div>` in the single-episode archive page matched first, assigning all episodes' download links to `Episode 1` and skipping subsequent episodes.
+  2. In multi-season series, zip packs in the "No Season" tab lacked season labels (e.g. `1. [ZIP PACK] 4K [42.8GB]`), leaving users unable to identify which season each archive belonged to.
+* **Architecture & Solutions**:
+  1. **Section-Based Episode Extraction**:
+     * Splits archive HTML by `<hr>` boundaries and targets leaf elements (`h1..h6, p`), preventing outer `<div>` elements from swallowing descendant episode links.
+     * Extracts all individual episodes (Episode 1 through N) with full multi-server link merging and quality deduplication.
+  2. **Season-Labeled Zip Packs**:
+     * Automatically formats zip pack names with their corresponding season:  
+       `📦 [ZIP PACK] • Season $seasonNum • $quality [$size]` (e.g. `📦 [ZIP PACK] • Season 4 • 4K [42.8GB]`).
+     * Sorts zip packs hierarchically by Season (descending) and file size/resolution.
+  3. **Version Bump**: Bumped to **v9** in `MoviesDrive/build.gradle.kts`, `.github/workflows/build.yml`, and `agent.md`.
 
 ---
 
