@@ -531,8 +531,10 @@ class DesireMoviesProvider(private val pluginContext: Context? = null) : MainAPI
                 // Track quality and size in heading/paragraph text (if no download anchor is directly in this element)
                 val anchors = elem.select("a[href*='gyanigurus.'], a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='hubdrive.'], a[href*='multicloudlinks.'], a[href*='only-apis.com']")
                 if (anchors.isEmpty()) {
-                    val qm = Regex("""\b(2160p|4k|1080p|720p|480p|360p|hevc)\b""", RegexOption.IGNORE_CASE).find(text)?.value
-                    if (qm != null) currentQuality = qm
+                    val singleQualities = Regex("""\b(2160p|4k|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).findAll(text).toList()
+                    if (singleQualities.size == 1) {
+                        currentQuality = singleQualities.first().value
+                    }
 
                     // Clean spaces inside size numbers: e.g. "58 0 MB" -> "580 MB"
                     val normalizedText = text.replace(Regex("""(\d)\s+(\d)"""), "$1$2")

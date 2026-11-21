@@ -84,13 +84,28 @@ open class MoviesDriveHubCloud : ExtractorApi() {
             sizeStr: String?,
             filenameOrTitle: String?
         ): Pair<String, Int> {
-            val combined = "$qualityStr $filenameOrTitle"
+            val fnMatch = Regex("""\b([A-Za-z0-9._-]+\.(?:mkv|mp4))\b""", RegexOption.IGNORE_CASE).find(filenameOrTitle ?: "")
+            val targetFilename = fnMatch?.groupValues?.get(1) ?: ""
 
-            // 1. Resolution & QualityInt
-            val resMatch = Regex("""\b(2160p|4k|1440p|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).find(combined)
+            // 1. Resolution & QualityInt extraction
+            // First check the clean video filename directly if present
+            var resMatch = Regex("""\b(2160p|4k|1440p|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).find(targetFilename)
+            if (resMatch == null && !qualityStr.isNullOrBlank()) {
+                val singleQualities = Regex("""\b(2160p|4k|1440p|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).findAll(qualityStr).toList()
+                if (singleQualities.size == 1) {
+                    resMatch = singleQualities.first()
+                }
+            }
+            if (resMatch == null && !filenameOrTitle.isNullOrBlank()) {
+                val nonMulti = Regex("""\b(2160p|4k|1440p|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).findAll(filenameOrTitle).toList()
+                if (nonMulti.size == 1) {
+                    resMatch = nonMulti.first()
+                }
+            }
+
             val resFound = resMatch?.value?.lowercase()
-            val (resolutionText, qualityInt) = when {
-                resFound?.contains("2160") == true || resFound?.contains("4k") == true -> Pair("4K 2160p", Qualities.P2160.value)
+            var (resolutionText, qualityInt) = when {
+                resFound?.contains("2160") == true || resFound?.contains("4k") == true -> Pair("4K", Qualities.P2160.value)
                 resFound?.contains("1440") == true -> Pair("1440p", Qualities.P1440.value)
                 resFound?.contains("1080") == true -> Pair("1080p", Qualities.P1080.value)
                 resFound?.contains("720") == true -> Pair("720p", Qualities.P720.value)
@@ -99,7 +114,48 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 else -> Pair("", Qualities.Unknown.value)
             }
 
-            // 2. Codec / Video attributes
+            // 2. Clean single file size & size-based validation / fallback
+            val sizeClean = cleanSizeString(sizeStr) ?: cleanSizeString(filenameOrTitle)
+            val sizeBytes = parseSizeToBytes(sizeClean)
+
+            if (sizeBytes > 0L) {
+                // Correct falsely inherited 1080p/720p on small files
+                if (sizeBytes < 600_000_000L && qualityInt > Qualities.P480.value) {
+                    qualityInt = Qualities.P480.value
+                    resolutionText = "480p"
+                } else if (sizeBytes < 1_100_000_000L && qualityInt > Qualities.P720.value) {
+                    qualityInt = Qualities.P720.value
+                    resolutionText = "720p"
+                } else if (qualityInt == Qualities.Unknown.value) {
+                    when {
+                        sizeBytes < 600_000_000L -> {
+                            qualityInt = Qualities.P480.value
+                            resolutionText = "480p"
+                        }
+                        sizeBytes < 1_900_000_000L -> {
+                            qualityInt = Qualities.P720.value
+                            resolutionText = "720p"
+                        }
+                        sizeBytes < 5_500_000_000L -> {
+                            qualityInt = Qualities.P1080.value
+                            resolutionText = "1080p"
+                        }
+                        else -> {
+                            val is4k = (filenameOrTitle ?: "").contains("4k", ignoreCase = true) || (filenameOrTitle ?: "").contains("2160", ignoreCase = true)
+                            if (is4k) {
+                                qualityInt = Qualities.P2160.value
+                                resolutionText = "4K"
+                            } else {
+                                qualityInt = Qualities.P1080.value
+                                resolutionText = "1080p"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Codec / Video attributes
+            val combined = "$qualityStr $filenameOrTitle"
             val codec = when {
                 combined.contains("10bit", ignoreCase = true) && combined.contains("hevc", ignoreCase = true) -> "10Bit HEVC"
                 combined.contains("10bit", ignoreCase = true) -> "10Bit"
@@ -108,13 +164,10 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 else -> null
             }
 
-            // 3. Clean single file size
-            val sizeClean = cleanSizeString(sizeStr) ?: cleanSizeString(filenameOrTitle)
-
+            // 4. Clean minimal title formatting without duplicate resolution
             val parts = mutableListOf<String>()
             parts.add(server.trim())
-            if (resolutionText.isNotBlank()) parts.add(resolutionText)
-            if (codec != null && !resolutionText.contains(codec, ignoreCase = true)) parts.add(codec)
+            if (codec != null) parts.add(codec)
             if (sizeClean != null) parts.add("[$sizeClean]")
 
             val linkTitle = parts.joinToString(" • ")
@@ -344,8 +397,8 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 val html = rawHtml.replace(Regex("""<!--[\s\S]*?-->"""), "")
 
                 val pageTitle = Regex("""<title>([^<]+)</title>""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1) ?: ""
-                val filename = Regex("""filename=["']?([^"'>\s]+)""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
-                    ?: Regex("""/([^/]+\.(?:mkv|mp4))""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
+                val filename = Regex("""(?i)(?:Name\s*:\s*|Download\s+|title>GDFlix\s*\|\s*)([A-Za-z0-9._-]+\.(?:mkv|mp4))""").find(rawHtml)?.groupValues?.get(1)
+                    ?: Regex("""\b([A-Za-z0-9._-]+\.(?:mkv|mp4))\b""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
                     ?: ""
                 val combinedFileInfo = "$linkName $pageTitle $filename"
 

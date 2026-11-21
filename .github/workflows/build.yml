@@ -122,12 +122,12 @@ jobs:
             {
               "name": "MoviesDrive",
               "internalName": "MoviesDrive",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/MoviesDrive.cs3?v=9",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/MoviesDrive.cs3?v=10",
               "tvTypes": ["Movie", "TvSeries"],
               "language": "en",
               "iconUrl": "https://new4.moviesdrive.cyou/wp-content/uploads/2026/01/log.png",
               "apiVersion": 10,
-              "version": 9,
+              "version": 10,
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream movies & TV series from MoviesDrive (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"
@@ -135,12 +135,12 @@ jobs:
             {
               "name": "DesireMovies",
               "internalName": "DesireMovies",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/DesireMovies.cs3?v=1",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/DesireMovies.cs3?v=2",
               "tvTypes": ["Movie", "TvSeries"],
               "language": "en",
               "iconUrl": "https://1desiremovies.xyz/wp-content/uploads/2023/04/cropped-image_processing20210911-26622-fplmvm-192x192.png",
               "apiVersion": 10,
-              "version": 1,
+              "version": 2,
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream movies & TV series from DesireMovies (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"

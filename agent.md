@@ -35,8 +35,8 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`9`** | Movies & TV series with Multi-Episode Archive Fix, Season-Labeled Zip Packs & Clutter-Free Metadata |
-| **DesireMovies** | `DesireMovies` | **`1`** | Stream movies & TV series from DesireMovies with Auto-Domain Updates, Clean Audio Tags & Hierarchical Size Sorting |
+| **MoviesDrive** | `MoviesDrive` | **`10`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
+| **DesireMovies** | `DesireMovies` | **`2`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -317,6 +317,33 @@ flowchart LR
      * Secondary search: Clean HTML search route (`/search/{query}/page/{page}/`), cleanly bypassing WAF bot blocks on `?s=`.
      * 13 Home catalogue categories (Latest, Bollywood, South Hindi, Hollywood Hindi/English, Web Series, Korean Hindi, Punjabi, etc.) configurable and toggleable via `DesireMoviesSettingsFragment`.
   6. **Version**: Initial release **v1**.
+
+---
+
+### 10. Resolution Bug Fix & Redundant Quality Badge Elimination (MoviesDrive v10 & DesireMovies v2)
+* **Problem**:
+  In the stream mirror selection sheet, every single link was displayed as `1080p` both in the text and with a duplicate `1080p` badge at the end of the line, regardless of whether the file was 480p, 720p, or 1080p:
+  ```text
+  GDFlix 10Gbps 1080p [8.94 GB] 1080p
+  HubCloud 10Gbps 1080p [1.28 GB] 1080p
+  GDFlix 10Gbps 1080p HEVC [722.52 MB] 1080p
+  GDFlix 10Gbps 1080p [486.46 MB] 1080p
+  ```
+* **Root Causes & Solutions**:
+  1. **Top-Level `div` Traversal in `load()`**:
+     In `MoviesDriveProvider.kt`, `contentElem.select("h1, h2, h3, h4, h5, h6, p, div")` started by visiting outer `div` containers (`<div class="app-container">`) containing the post's full text (`... 480p | 720p | 1080p ...`), locking `currentHeadingQuality = "1080p"` and matching all download anchors inside that outer div before specific child `<h5>` headings could be evaluated.
+     * **Fix**: Removed `div` from the element selector, restricted heading quality updates strictly to elements containing a single resolution (`singleQualities.size == 1`), and added fallback anchor scanning to guarantee no links are missed.
+  2. **Resolution Determination Hierarchy in `formatLinkTitle`**:
+     Previously, `val combined = "$qualityStr $filenameOrTitle"` prioritized `qualityStr` first, so any mistakenly inherited `1080p` shadowed the true resolution in the filename.
+     * **Fix**: Extracted resolution directly from the exact video filename (`[A-Za-z0-9._-]+\.(?:mkv|mp4)`) first, falling back to `qualityStr` only when it contains a single resolution token.
+  3. **File Size Cross-Check & Fallback**:
+     Added size-based validation: small files (< 600 MB) are guaranteed to be 480p (correcting false 1080p labels), files under 1.1 GB are capped at 720p, and unknown resolutions are automatically inferred from file size thresholds.
+  4. **Eliminated Redundant Resolution Badges**:
+     CloudStream natively renders a quality badge at the end of each link row via `link.quality`. Embedding resolution text in `link.name` caused it to display twice (`1080p [8.94 GB] 1080p`).
+     * **Fix**: Formatted `link.name` cleanly as `"$server • [$sizeClean]"` (or `"$server • $codec [$sizeClean]"` when codec like HEVC/10Bit is present). CloudStream's badge provides the clean, non-redundant resolution tag.
+  5. **GDFlix Filename Regex**:
+     Replaced greedy multiline fallback `Regex("""/([^/]+\.(?:mkv|mp4))""")` with precise token match `Regex("""(?i)(?:Name\s*:\s*|Download\s+|title>GDFlix\s*\|\s*)([A-Za-z0-9._-]+\.(?:mkv|mp4))""")`.
+  6. **Versions**: Bumped **MoviesDrive to v10** and **DesireMovies to v2**.
 
 ---
 

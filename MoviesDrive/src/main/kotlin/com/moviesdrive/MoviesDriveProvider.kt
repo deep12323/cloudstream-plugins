@@ -560,8 +560,8 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             var currentSeason = titleSeason ?: urlSeason ?: 1
 
             // Parse download anchors and season context
-            val contentElem = doc.selectFirst(".entry-content, .page-body") ?: doc
-            val allElements = contentElem.select("h1, h2, h3, h4, h5, h6, p, div")
+            val contentElem = doc.selectFirst(".entry-content, .page-body, .post-layout, .post-content") ?: doc
+            val allElements = contentElem.select("h1, h2, h3, h4, h5, h6, p")
 
             data class ScrapedDownload(
                 val season: Int,
@@ -578,15 +578,17 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             var currentHeadingQuality: String? = null
 
             for (elem in allElements) {
-                val text = elem.text()
+                val text = elem.text().trim()
+                if (text.isBlank()) continue
+
                 val seasonMatch = Regex("""(?i)\bSeason\s*0*(\d+)\b""").find(text)
                 if (seasonMatch != null && !text.contains("Single Episode", ignoreCase = true) && !text.contains("Zip", ignoreCase = true)) {
                     currentSeason = seasonMatch.groupValues[1].toIntOrNull() ?: currentSeason
                 }
 
-                val hqMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(text)?.value
-                if (hqMatch != null && (elem.tagName().matches(Regex("h[1-6]")) || !text.contains("Download", ignoreCase = true))) {
-                    currentHeadingQuality = hqMatch
+                val singleQualities = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).findAll(text).toList()
+                if (singleQualities.size == 1 && (elem.tagName().matches(Regex("h[1-6]")) || !text.contains("Download", ignoreCase = true))) {
+                    currentHeadingQuality = singleQualities.first().value
                 }
 
                 val anchors = elem.select("a[href*='mdrive.'], a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
@@ -599,6 +601,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     val isZip = linkText.contains("Zip", ignoreCase = true) || href.contains("zip", ignoreCase = true)
 
                     val linkQuality = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(linkText)?.value
+                        ?: Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(text)?.value
                         ?: currentHeadingQuality
                     val linkSize = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(linkText)?.groupValues?.get(1)
                         ?: Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)
@@ -615,6 +618,35 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                         )
                     )
                 }
+            }
+
+            // Fallback: check any remaining download anchors outside standard h1-h6/p tags
+            val remainingAnchors = contentElem.select("a[href*='mdrive.'], a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
+            for (anchor in remainingAnchors) {
+                val href = anchor.attr("href").trim()
+                val linkText = anchor.text().trim()
+                val parentText = anchor.parent()?.text()?.trim() ?: ""
+                val combinedText = "$linkText $parentText"
+                if (href.isBlank() || !href.startsWith("http") || !seenHrefs.add(href)) continue
+
+                val isSingle = combinedText.contains("Single Episode", ignoreCase = true) || href.contains("single", ignoreCase = true)
+                val isZip = combinedText.contains("Zip", ignoreCase = true) || href.contains("zip", ignoreCase = true)
+
+                val linkQuality = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(combinedText)?.value
+                    ?: currentHeadingQuality
+                val linkSize = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(combinedText)?.groupValues?.get(1)
+
+                scrapedDownloads.add(
+                    ScrapedDownload(
+                        season = currentSeason,
+                        text = linkText.ifBlank { "Download" },
+                        url = href,
+                        isSingleEpisode = isSingle,
+                        isZip = isZip,
+                        quality = linkQuality,
+                        size = linkSize
+                    )
+                )
             }
 
             if (isSeries) {
