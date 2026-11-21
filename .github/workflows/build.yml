@@ -122,12 +122,12 @@ jobs:
             {
               "name": "MoviesDrive",
               "internalName": "MoviesDrive",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/MoviesDrive.cs3?v=7",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/MoviesDrive.cs3?v=8",
               "tvTypes": ["Movie", "TvSeries"],
               "language": "en",
               "iconUrl": "https://new4.moviesdrive.cyou/wp-content/uploads/2026/01/log.png",
               "apiVersion": 10,
-              "version": 7,
+              "version": 8,
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream movies & TV series from MoviesDrive (HubCloud, GDFlix direct R2, Google CDN & Pixeldrain Bypass)"

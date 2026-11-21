@@ -35,7 +35,7 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`7`** | Movies & TV series with HubCloud/GDFlix extraction, Auto Domain Updates & Pixeldrain Bypass |
+| **MoviesDrive** | `MoviesDrive` | **`8`** | Movies & TV series with HubCloud/GDFlix extraction, Audio Tag, Clutter-Free Metadata & Auto Domain Updates |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -144,6 +144,25 @@ flowchart LR
   4. **Transparent Dynamic Retries**: If `getMainPage`, `search`, or `load` encounter an HTTP or connection failure, they automatically discover the new active domain and seamlessly re-execute the request.
   5. **Legacy Bookmark Rewrite**: Any saved or bookmarked URLs containing legacy domains (`new3`, `new4`, etc.) are dynamically rewritten to the active `mainUrl` during `load()`, preserving user bookmarks indefinitely.
   6. **Version Bump**: Bumped to **v7** across all manifests, workflow definitions, and compilation targets.
+
+---
+
+### 8. MoviesDrive: Minimalistic Metadata & Audio Language Tag Support (v8)
+* **Problem**:
+  1. Plot contained repeated movie titles at the beginning (e.g. `Buddha 2: The Endless Journey (2014) 2500 years ago...`) and trailing screenshot/download link headers (`Screen-Shots :- ... Full Movie HD >>>>>> -:`).
+  2. Tags and cast contained huge clutter text: outer `<div>` selections caused subsequent page lines to leak into `Genre:` and `Stars:`, leading to `Country: Japan`, `Original Language: Japa`, actors, and plot text being displayed as genre chips, and `Language: [Hindi...` attached to the last actor.
+  3. No clear audio language tag was displayed to inform users which audio streams are available.
+* **Architecture & Solutions**:
+  1. **Clean Audio Language Tag**:
+     * Extracts audio language directly from HTML info block (`Language: ...`) or title brackets (`[Hindi (DD2.0) & English]`, `{Hindi-Japanese}`, etc.).
+     * Strips `/ ESubs` subtitle tags, unescapes entities, and formats as a prominent `Audio: <Language>` chip (e.g. `Audio: Hindi (DD2.0) & English`).
+  2. **Minimalistic Plot Cleaning**:
+     * Adjacent sibling targeting (`h3:contains(Storyline) + p`, `+ div`, `+ h5`) eliminates container leakage.
+     * Strips leading repeated title and release year.
+     * Cuts off any trailing screenshot headings, download link headers, or ASCII arrows (`>>>>>>`).
+  3. **Isolated Genre & Cast Extraction**:
+     * Stops extraction before adjacent field delimiters (`Country:`, `Language:`, `Stars:`, `Quality:`, `Director:`, `Storyline:`), keeping genres strictly to film genres (`Animation`, `Drama`, `History`) and actors strictly to valid cast names.
+  4. **Version Bump**: Bumped to **v8** across `MoviesDrive/build.gradle.kts`, `.github/workflows/build.yml`, and `agent.md`.
 
 ---
 

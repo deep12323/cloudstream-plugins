@@ -143,20 +143,21 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
         t = t.replace(Regex("""(?i)\s*\([S\d\s]+Ep\d+\s*Added\)"""), "")
 
         // Remove site branding & full movie / series markers
-        t = t.replace(Regex("""(?i)\s*[-–|]?\s*MoviesDrives?(\.bid|\.cyou|\.cfd)?.*$"""), "")
+        t = t.replace(Regex("""(?i)\s*[-–—|]?\s*MoviesDrives?(\.bid|\.cyou|\.cfd|\.mov|\.org)?.*$"""), "")
             .replace(Regex("""(?i)\s*\|\s*Full Movie.*$"""), "")
             .replace(Regex("""(?i)\s*\|\s*Complete Web Series.*$"""), "")
             .replace(Regex("""(?i)\bComplete\s*(?:Web\s*)?Series\b"""), "")
             .replace(Regex("""(?i)\bFull\s*Movie\b"""), "")
 
         // Remove language names that appear right before OTT / format tags
-        t = t.replace(Regex("""(?i)\b(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Korean|Japanese|Dual|Multi)\s*(?=(?:Atrangii|Netflix|Hotstar|Amazon|Zee5|SonyLiv|Series|WEB-DL|480p|720p|1080p|2160p|Complete|Full))"""), "")
+        t = t.replace(Regex("""(?i)\b(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Korean|Japanese|Odia|Bengali|Dual|Multi)\s*(?=(?:Atrangii|Netflix|Hotstar|Amazon|Zee5|SonyLiv|Series|WEB-DL|480p|720p|1080p|2160p|Complete|Full))"""), "")
 
         // Remove OTT platforms e.g. Netflix, JioHotstar, etc.
         t = t.replace(Regex("""(?i)\b(?:NETFLIX|Netflix|JioHotstar|Hotstar|Atrangii|Amazon(?:\s*Prime)?|Zee5|SonyLiv|Apple\s*TV\+?)\s*(?:Series|Korean Drama|Drama)?\b"""), "")
 
         // Remove bracketed audio info
-        t = t.replace(Regex("""(?i)\[(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Dutch|Korean|Japanese|Dual|Multi)[^\]]*\]"""), "")
+        t = t.replace(Regex("""(?i)\[(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Dutch|Korean|Japanese|Odia|Bengali|Punjabi|Marathi|Gujarati|Russian|Spanish|French|German|Italian|Thai|Indonesian|Turkish|Dual|Multi)[^\]]*\]"""), "")
+        t = t.replace(Regex("""(?i)\{(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Dutch|Korean|Japanese|Odia|Bengali|Punjabi|Marathi|Gujarati|Russian|Spanish|French|German|Italian|Thai|Indonesian|Turkish|Dual|Multi)[^}]*\}"""), "")
         t = t.replace(Regex("""(?i)\[[xX]264/ESubs?\]"""), "")
         t = t.replace(Regex("""(?i)\[ESubs?\]"""), "")
 
@@ -473,29 +474,85 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             val posterUrl = doc.selectFirst("img[src*='tmdb.org']")?.attr("src")
                 ?: doc.selectFirst(".entry-content img, .page-body img")?.attr("src")
 
-            // Plot extraction
-            val plot = doc.selectFirst(
-                "h3:contains(Storyline) ~ p, h3:contains(Storyline) ~ h5, " +
-                "h4:contains(Storyline) ~ p, h4:contains(Storyline) ~ h5, " +
-                "p:contains(Storyline), h5:contains(Storyline), div:contains(Storyline)"
-            )?.text()
-                ?.replace(Regex("""(?i)^.*Storyline\s*:?-?\s*"""), "")
-                ?.replace(Regex("""^[\s♦:–-]+"""), "")
-                ?.replace(Regex("""(?i)\s*Download\s+.*$"""), "")
-                ?.trim()
+            // 1. Audio Language Tag extraction
+            val docHtml = doc.html()
+            val langMatch = Regex("""(?i)(?<!Original\s)(?<!Native\s)\b(?:Language|Audio)\s*:\s*([^<\n\r]+|<[^>]+>[^<]+</[^>]+>)""").find(docHtml)
+            var rawLang = langMatch?.groupValues?.get(1)?.replace(Regex("""<[^>]+>"""), " ") ?: ""
+            if (rawLang.isBlank()) {
+                val tMatch = Regex("""(?i)\[((?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Korean|Japanese|Odia|Bengali|Marathi|Punjabi|Dual|Multi)[^\]]*)\]""").find(rawTitle)
+                if (tMatch != null) rawLang = tMatch.groupValues[1]
+            }
+            if (rawLang.isBlank()) {
+                val cMatch = Regex("""\{([^}]+)\}""").find(rawTitle)
+                if (cMatch != null) rawLang = cMatch.groupValues[1]
+            }
+            val cleanLang = rawLang
+                .replace("&#038;", "&")
+                .replace("&amp;", "&")
+                .replace(Regex("""(?i)\s*/\s*ESubs?.*$"""), "")
+                .replace(Regex("""^[\[\{]+|[\]\}]+$"""), "")
+                .replace(Regex("""\s{2,}"""), " ")
+                .trim()
+            val audioTag = if (cleanLang.isNotBlank() && cleanLang.length < 60) "Audio: $cleanLang" else null
 
-            // Rating
+            // 2. Plot extraction
+            val rawPlot = doc.selectFirst(
+                "h3:contains(Storyline) + p, h3:contains(Storyline) + div, h3:contains(Storyline) + h5, " +
+                "h4:contains(Storyline) + p, h4:contains(Storyline) + div, h4:contains(Storyline) + h5, " +
+                "h5:contains(Storyline) + p, h5:contains(Storyline) + div, " +
+                "p:contains(Storyline)"
+            )?.text() ?: run {
+                val storyHeading = doc.selectFirst("h1:contains(Storyline), h2:contains(Storyline), h3:contains(Storyline), h4:contains(Storyline), h5:contains(Storyline)")
+                storyHeading?.nextElementSiblings()?.firstOrNull { it.text().isNotBlank() && !it.tagName().startsWith("h") }?.text()
+            }
+
+            val plot = rawPlot?.let { raw ->
+                var p = raw.replace("&#038;", "&").replace("&amp;", "&")
+                    .replace(Regex("""^(?:[\s♦:–-]+|Storyline\s*:?-?\s*|Synopsis\s*:?-?\s*|Plot\s*:?-?\s*)+""", RegexOption.IGNORE_CASE), "")
+
+                // Remove leading repeated title or year: e.g. 'Buddha 2: The Endless Journey (2014) '
+                val escapedTitle = Regex.escape(title.trim())
+                p = p.replace(Regex("""^(?:$escapedTitle)?\s*(?:\((?:19|20)\d{2}\)|\b(?:19|20)\d{2}\b)?\s*[-:–—]*\s*""", RegexOption.IGNORE_CASE), "")
+                p = p.replace(Regex("""^[^\w]*(?:[A-Za-z0-9\s:’'.-]+\((?:19|20)\d{2}\)|\b(?:19|20)\d{2}\b)[-:–—\s]*"""), "")
+
+                // Cut off trailing screenshots or download clutter
+                p = p.replace(Regex("""(?i)(?:\b(?:Screen-?Shots|Screenshots|Download\s*Links|DOWNLOAD\s*LINKS|Full\s*Movie|Watch\s*Online)\b|>{2,}|-{2,}).*$"""), "")
+                p.replace(Regex("""\s{2,}"""), " ").trim()
+            }?.takeIf { it.isNotBlank() }
+
+            // 3. Rating
             val ratingText = doc.selectFirst("div:contains(iMDB Rating), p:contains(iMDB Rating)")?.text()
             val ratingMatch = Regex("""(\d+(?:\.\d+)?)\s*/\s*10""").find(ratingText ?: "")
             val scoreVal = ratingMatch?.groupValues?.get(1)?.toDoubleOrNull()
 
-            // Tags / Genres
-            val genreText = doc.selectFirst("div:contains(Genre:), p:contains(Genre:)")?.text()
-            val genres = genreText?.substringAfter("Genre:")?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+            // 4. Tags / Genres
+            val genreMatch = Regex("""(?i)\bGenre\s*:\s*([^<\n\r]+|<[^>]+>[^<]+</[^>]+>)""").find(docHtml)
+            var rawGenre = genreMatch?.groupValues?.get(1)?.replace(Regex("""<[^>]+>"""), " ") ?: ""
+            for (stop in listOf("Country:", "Language:", "Stars:", "Quality:", "Director:", "Writer:", "Format:")) {
+                if (rawGenre.contains(stop, ignoreCase = true)) {
+                    rawGenre = rawGenre.substring(0, rawGenre.indexOf(stop, ignoreCase = true))
+                }
+            }
+            val genres = rawGenre.split(",")
+                .map { it.replace(Regex("""^[^\w\p{L}]+"""), "").trim() }
+                .filter { it.isNotBlank() && it.length in 2..30 }
 
-            // Actors
-            val starsText = doc.selectFirst("div:contains(Stars:), p:contains(Stars:)")?.text()
-            val actors = starsText?.substringAfter("Stars:")?.split(",")?.map { ActorData(Actor(it.trim(), null)) }
+            val cleanTags = mutableListOf<String>()
+            if (audioTag != null) cleanTags.add(audioTag)
+            cleanTags.addAll(genres)
+
+            // 5. Actors
+            val starsMatch = Regex("""(?i)\b(?:Stars|Cast)\s*:\s*([^<\n\r]+|<[^>]+>[^<]+</[^>]+>)""").find(docHtml)
+            var rawStars = starsMatch?.groupValues?.get(1)?.replace(Regex("""<[^>]+>"""), " ") ?: ""
+            for (stop in listOf("Language:", "Quality:", "Format:", "Storyline:", "Country:", "Director:", "Writer:")) {
+                if (rawStars.contains(stop, ignoreCase = true)) {
+                    rawStars = rawStars.substring(0, rawStars.indexOf(stop, ignoreCase = true))
+                }
+            }
+            val actors = rawStars.split(",")
+                .map { it.replace(Regex("""^[^\w\p{L}]+"""), "").trim() }
+                .filter { it.isNotBlank() && it.length in 2..50 }
+                .map { ActorData(Actor(it, null)) }
 
             // Determine initial season from title or url
             val urlSeason = Regex("""(?i)season[-_ ]*0*(\d+)""").find(targetUrl)?.groupValues?.get(1)?.toIntOrNull()
@@ -728,8 +785,8 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     this.posterUrl = posterUrl
                     this.year = year
                     this.plot = plot
-                    this.tags = genres
-                    this.actors = actors
+                    this.tags = cleanTags.ifEmpty { null }
+                    this.actors = actors.ifEmpty { null }
                     if (scoreVal != null) this.score = Score.from10(scoreVal)
                 }
             } else {
@@ -749,8 +806,8 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     this.posterUrl = posterUrl
                     this.year = year
                     this.plot = plot
-                    this.tags = genres
-                    this.actors = actors
+                    this.tags = cleanTags.ifEmpty { null }
+                    this.actors = actors.ifEmpty { null }
                     if (scoreVal != null) this.score = Score.from10(scoreVal)
                 }
             }
