@@ -9,6 +9,8 @@ import com.lagradost.cloudstream3.mainPageOf
 object MoviesDrivePreferences {
     private const val PREFS_NAME = "moviesdrive_plugin_prefs"
     private const val KEY_CATEGORIES = "catalogue_categories"
+    private const val KEY_ACTIVE_DOMAIN = "active_domain"
+    const val DEFAULT_DOMAIN = "https://new4.moviesdrive.cyou"
     private val mapper = jacksonObjectMapper()
 
     val DEFAULT_CATEGORIES = listOf(
@@ -34,6 +36,19 @@ object MoviesDrivePreferences {
         CategoryItem("Sci-Fi", "sifi", isEnabled = true),
         CategoryItem("Adventure", "adventure", isEnabled = true)
     )
+
+    fun getSavedDomain(context: Context?): String {
+        if (context == null) return DEFAULT_DOMAIN
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(KEY_ACTIVE_DOMAIN, DEFAULT_DOMAIN) ?: DEFAULT_DOMAIN
+    }
+
+    fun setSavedDomain(context: Context?, domain: String) {
+        if (context == null) return
+        val clean = domain.trim().removeSuffix("/")
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_ACTIVE_DOMAIN, clean).apply()
+    }
 
     fun getCategories(context: Context?): List<CategoryItem> {
         if (context == null) return DEFAULT_CATEGORIES
@@ -89,7 +104,7 @@ object MoviesDrivePreferences {
         saveCategories(context, DEFAULT_CATEGORIES)
     }
 
-    fun getActiveCategories(context: Context?, baseUrl: String = "https://new4.moviesdrive.cyou"): List<MainPageData> {
+    fun getActiveCategories(context: Context?, baseUrl: String = getSavedDomain(context)): List<MainPageData> {
         val categories = getCategories(context).filter { it.isEnabled }
         val list = if (categories.isEmpty()) DEFAULT_CATEGORIES else categories
 

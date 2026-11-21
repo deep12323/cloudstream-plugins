@@ -35,7 +35,7 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`6`** | Movies & TV series with HubCloud/GDFlix extraction, Pixeldrain Bypass & mirror search |
+| **MoviesDrive** | `MoviesDrive` | **`7`** | Movies & TV series with HubCloud/GDFlix extraction, Auto Domain Updates & Pixeldrain Bypass |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -126,6 +126,24 @@ flowchart LR
   4. **Clean Zip Pack Names**: Formatted cleanly as `📦 [ZIP PACK] • $quality [$size]` without duplicate `Zip` or carry-over sizes.
   5. **Stream Link Title Formatter**: Created `formatLinkTitle` in `HubCloudExtractor` to produce uniform `<Server> • <Resolution> • <Codec> • [<Size>]` titles with exact single file size and accurate `qualityInt`. Stripped HTML comments and prevented duplicate links.
   6. **Version Bump**: Bumped to **v6** in both `MoviesDrive/build.gradle.kts` and `.github/workflows/build.yml`.
+
+---
+
+### 7. MoviesDrive: Auto Domain Updates & Health Recovery (v7)
+* **Goal**: Enable fully autonomous domain rotation and health verification so MoviesDrive never breaks when the website changes subdomains or domains (e.g. `new4` -> `new5.moviesdrive.cyou` or mirrors).
+* **Architecture & Solutions**:
+  1. **Remote Cloud Config (`moviesdrive_domain.txt`)**:
+     * Plugin queries `https://raw.githubusercontent.com/deep12323/cloudstream-plugins/master/moviesdrive_domain.txt` on failure, allowing instant worldwide redirection to any newly active domain without requiring plugin releases.
+  2. **Autonomous Domain Probing & Verification**:
+     * `verifyDomain`: Validates endpoint responsiveness and response signatures against MoviesDrive WordPress REST API (`/wp-json/`) and home HTML.
+     * `resolveActiveDomain`: If current domain drops, sequentially probes:
+       - GitHub remote config.
+       - Rotating subdomains: `new4`, `new5`, `new6`, `new7`, `new8`, `new3`, `new2.moviesdrive.cyou`.
+       - Official mirrors & landing domains: `moviesdrives.mov`, `moviedrive.org`, `moviesdrives.cfd`.
+  3. **Persistent Preference Cache**: Working domain is stored in `SharedPreferences` (`active_domain`) so subsequent launches use the verified working domain directly without rediscovery delays.
+  4. **Transparent Dynamic Retries**: If `getMainPage`, `search`, or `load` encounter an HTTP or connection failure, they automatically discover the new active domain and seamlessly re-execute the request.
+  5. **Legacy Bookmark Rewrite**: Any saved or bookmarked URLs containing legacy domains (`new3`, `new4`, etc.) are dynamically rewritten to the active `mainUrl` during `load()`, preserving user bookmarks indefinitely.
+  6. **Version Bump**: Bumped to **v7** across all manifests, workflow definitions, and compilation targets.
 
 ---
 

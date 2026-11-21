@@ -17,7 +17,7 @@ import java.net.URLEncoder
 import java.util.Collections
 
 class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI() {
-    override var mainUrl = "https://new4.moviesdrive.cyou"
+    override var mainUrl = MoviesDrivePreferences.getSavedDomain(pluginContext)
     override var name = "MoviesDrive"
     override val hasMainPage = true
     override val hasQuickSearch = true
@@ -35,6 +35,95 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
     override val mainPage: List<MainPageData>
         get() = MoviesDrivePreferences.getActiveCategories(pluginContext, mainUrl)
+
+    // ==========================================
+    // AUTO DOMAIN DISCOVERY & HEALTH VERIFICATION
+    // ==========================================
+
+    private suspend fun verifyDomain(candidateUrl: String): Boolean {
+        val cleanUrl = candidateUrl.trim().removeSuffix("/")
+        if (!cleanUrl.startsWith("http")) return false
+        return try {
+            val resp = app.get("$cleanUrl/wp-json/", headers = requestHeaders, timeout = 5L)
+            resp.isSuccessful && (resp.text.contains("moviesdrive", ignoreCase = true) || resp.text.contains("name", ignoreCase = true))
+        } catch (_: Exception) {
+            try {
+                val resp2 = app.get("$cleanUrl/", headers = requestHeaders, timeout = 5L)
+                resp2.isSuccessful && resp2.text.contains("MoviesDrive", ignoreCase = true)
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    private suspend fun resolveActiveDomain(): String {
+        val current = mainUrl.removeSuffix("/")
+
+        // 1. Verify if current domain is still healthy
+        if (verifyDomain(current)) {
+            return current
+        }
+
+        // 2. Check GitHub Remote Config file for immediate instant domain migration
+        try {
+            val remoteResp = app.get(
+                "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/master/moviesdrive_domain.txt",
+                timeout = 5L
+            )
+            if (remoteResp.isSuccessful) {
+                val candidate = remoteResp.text.trim().removeSuffix("/")
+                if (candidate.startsWith("http") && candidate != current && verifyDomain(candidate)) {
+                    updateDomain(candidate)
+                    return candidate
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 3. Sequential Domain Probing (e.g. new4 -> new5, new6, new7, new8, new9, new10)
+        val numMatch = Regex("""(?i)https?://new(\d+)\.moviesdrive""").find(current)
+        val currentNum = numMatch?.groupValues?.get(1)?.toIntOrNull() ?: 4
+        for (nextNum in (currentNum + 1)..(currentNum + 6)) {
+            val candidate = "https://new$nextNum.moviesdrive.cyou"
+            if (verifyDomain(candidate)) {
+                updateDomain(candidate)
+                return candidate
+            }
+        }
+
+        // 4. Check official redirect mirrors (moviesdrives.mov, moviedrive.org, moviesdrives.cfd)
+        val mirrors = listOf(
+            "https://moviesdrives.mov",
+            "https://moviedrive.org",
+            "https://moviesdrives.cfd"
+        )
+        for (mirror in mirrors) {
+            try {
+                val resp = app.get(mirror, headers = requestHeaders, timeout = 5L)
+                val finalUrl = resp.okhttpResponse.request.url.toString().removeSuffix("/")
+                if (finalUrl.startsWith("http") && !finalUrl.contains("moviesdrives.bid") && verifyDomain(finalUrl)) {
+                    updateDomain(finalUrl)
+                    return finalUrl
+                }
+                val extractedDomain = Regex("""(?i)https?://(?:new\d*|www\.)?moviesdrive\.[a-z]{2,6}""").find(resp.text)?.value
+                if (extractedDomain != null && extractedDomain != current && verifyDomain(extractedDomain)) {
+                    updateDomain(extractedDomain)
+                    return extractedDomain
+                }
+            } catch (_: Exception) {}
+        }
+
+        return current
+    }
+
+    private fun updateDomain(newDomain: String) {
+        val clean = newDomain.trim().removeSuffix("/")
+        mainUrl = clean
+        MoviesDrivePreferences.setSavedDomain(pluginContext, clean)
+    }
+
+    // ==========================================
+    // TITLE CLEANER & METADATA PARSING
+    // ==========================================
 
     private fun cleanTitle(raw: String): String {
         var t = raw.replace("&amp;", "&")
@@ -141,14 +230,28 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val baseTarget = request.data.removeSuffix("/")
-        val url = if (baseTarget.equals(mainUrl, ignoreCase = true) || baseTarget.isEmpty()) {
-            if (page <= 1) "$mainUrl/" else "$mainUrl/page/$page/"
+        val currentBase = mainUrl.removeSuffix("/")
+        val activeTarget = if (baseTarget.contains("moviesdrive.")) {
+            baseTarget.replace(Regex("""https?://[^/]+"""), currentBase)
         } else {
-            if (page <= 1) "$baseTarget/" else "$baseTarget/page/$page/"
+            baseTarget
+        }
+
+        val url = if (activeTarget.equals(currentBase, ignoreCase = true) || activeTarget.isEmpty()) {
+            if (page <= 1) "$currentBase/" else "$currentBase/page/$page/"
+        } else {
+            if (page <= 1) "$activeTarget/" else "$activeTarget/page/$page/"
         }
 
         try {
-            val response = app.get(url, headers = requestHeaders, timeout = 15L)
+            var response = app.get(url, headers = requestHeaders, timeout = 12L)
+            if (!response.isSuccessful) {
+                val newDomain = resolveActiveDomain()
+                if (newDomain != currentBase) {
+                    val retryUrl = url.replace(currentBase, newDomain)
+                    response = app.get(retryUrl, headers = requestHeaders, timeout = 12L)
+                }
+            }
             if (!response.isSuccessful) return null
 
             val doc = response.document
@@ -166,6 +269,20 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                 hasNext = hasNext
             )
         } catch (e: Exception) {
+            val newDomain = resolveActiveDomain()
+            if (newDomain != currentBase) {
+                try {
+                    val retryUrl = url.replace(currentBase, newDomain)
+                    val retryResp = app.get(retryUrl, headers = requestHeaders, timeout = 12L)
+                    if (retryResp.isSuccessful) {
+                        val doc = retryResp.document
+                        val cards = doc.select(".movies-grid > a, div.poster-card")
+                        val items = cards.mapNotNull { parsePosterCard(it) }.distinctBy { it.url }
+                        val hasNext = doc.selectFirst("a.next-btn, a.next, .pagination a.next, .pagination a.next-btn, a:contains(Next)") != null || items.size >= 24
+                        return newHomePageResponse(HomePageList(request.name, items, false), hasNext)
+                    }
+                } catch (_: Exception) {}
+            }
             e.printStackTrace()
             return null
         }
@@ -294,10 +411,17 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             e.printStackTrace()
         }
 
-        // 4. Fallback to HTML search
+        // 4. Fallback to HTML search (with auto-domain recovery)
         val htmlUrl = if (page <= 1) "$mainUrl/?s=$encodedQuery" else "$mainUrl/page/$page/?s=$encodedQuery"
         try {
-            val response = app.get(htmlUrl, headers = requestHeaders, timeout = 15L)
+            var response = app.get(htmlUrl, headers = requestHeaders, timeout = 15L)
+            if (!response.isSuccessful) {
+                val newDomain = resolveActiveDomain()
+                if (newDomain != mainUrl) {
+                    val retryUrl = htmlUrl.replace(mainUrl, newDomain)
+                    response = app.get(retryUrl, headers = requestHeaders, timeout = 15L)
+                }
+            }
             if (!response.isSuccessful) return newSearchResponseList(emptyList(), false)
 
             val doc = response.document
@@ -320,14 +444,29 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
     override suspend fun load(url: String): LoadResponse? {
         try {
-            val response = app.get(url, headers = requestHeaders, timeout = 15L)
+            val currentBase = mainUrl.removeSuffix("/")
+            // Auto-rewrite any legacy or stale domain to active working mainUrl
+            val targetUrl = if (url.contains("moviesdrive.")) {
+                url.replace(Regex("""https?://[^/]+"""), currentBase)
+            } else {
+                url
+            }
+
+            var response = app.get(targetUrl, headers = requestHeaders, timeout = 15L)
+            if (!response.isSuccessful) {
+                val newDomain = resolveActiveDomain()
+                if (newDomain != currentBase) {
+                    val retryUrl = targetUrl.replace(currentBase, newDomain)
+                    response = app.get(retryUrl, headers = requestHeaders, timeout = 15L)
+                }
+            }
             if (!response.isSuccessful) return null
             val doc = response.document
 
             val rawTitle = doc.selectFirst("h1.entry-title, h1.post-title, h1, title")?.text() ?: "Unknown"
             val title = cleanTitle(rawTitle)
             val year = extractYear(rawTitle)
-            val isSeries = isTvSeries(rawTitle, url)
+            val isSeries = isTvSeries(rawTitle, targetUrl)
             val type = if (isSeries) TvType.TvSeries else TvType.Movie
 
             // Poster extraction
@@ -359,7 +498,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             val actors = starsText?.substringAfter("Stars:")?.split(",")?.map { ActorData(Actor(it.trim(), null)) }
 
             // Determine initial season from title or url
-            val urlSeason = Regex("""(?i)season[-_ ]*0*(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+            val urlSeason = Regex("""(?i)season[-_ ]*0*(\d+)""").find(targetUrl)?.groupValues?.get(1)?.toIntOrNull()
             val titleSeason = Regex("""(?i)\b(?:Season|S)\s*0*(\d+)\b""").find(rawTitle)?.groupValues?.get(1)?.toIntOrNull()
             var currentSeason = titleSeason ?: urlSeason ?: 1
 
@@ -585,7 +724,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
                 val sortedEpisodes = episodesList.sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 1 }))
 
-                return newTvSeriesLoadResponse(title, url, type, sortedEpisodes) {
+                return newTvSeriesLoadResponse(title, targetUrl, type, sortedEpisodes) {
                     this.posterUrl = posterUrl
                     this.year = year
                     this.plot = plot
@@ -606,7 +745,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                 )
                 val moviePayload = mapper.writeValueAsString(downloadItems)
 
-                return newMovieLoadResponse(title, url, type, moviePayload) {
+                return newMovieLoadResponse(title, targetUrl, type, moviePayload) {
                     this.posterUrl = posterUrl
                     this.year = year
                     this.plot = plot
