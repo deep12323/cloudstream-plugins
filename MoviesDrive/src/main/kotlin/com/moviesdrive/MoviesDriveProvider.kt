@@ -37,15 +37,56 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
         get() = MoviesDrivePreferences.getActiveCategories(pluginContext, mainUrl)
 
     private fun cleanTitle(raw: String): String {
-        return raw.replace(Regex("""(?i)\s*[-–|]?\s*MoviesDrives?.*$"""), "")
-            .replace(Regex("""(?i)\s*\|\s*Full Movie.*$"""), "")
-            .replace(Regex("""(?i)\s*\|\s*Complete Web Series.*$"""), "")
-            .replace("&amp;", "&")
+        var t = raw.replace("&amp;", "&")
             .replace("&#8211;", "-")
             .replace("&#8217;", "'")
             .replace("&#038;", "&")
             .replace("&hellip;", "...")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("–", "-")
+            .replace("—", "-")
+
+        // Remove [18+]
+        t = t.replace(Regex("""(?i)^\s*\[?18\+\]?\s*"""), "")
+
+        // Remove episode notifications e.g. (S20 Ep76 Added)
+        t = t.replace(Regex("""(?i)\s*\([S\d\s]+Ep\d+\s*Added\)"""), "")
+
+        // Remove site branding & full movie / series markers
+        t = t.replace(Regex("""(?i)\s*[-–|]?\s*MoviesDrives?(\.bid|\.cyou|\.cfd)?.*$"""), "")
+            .replace(Regex("""(?i)\s*\|\s*Full Movie.*$"""), "")
+            .replace(Regex("""(?i)\s*\|\s*Complete Web Series.*$"""), "")
+            .replace(Regex("""(?i)\bComplete\s*(?:Web\s*)?Series\b"""), "")
+            .replace(Regex("""(?i)\bFull\s*Movie\b"""), "")
+
+        // Remove language names that appear right before OTT / format tags
+        t = t.replace(Regex("""(?i)\b(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Korean|Japanese|Dual|Multi)\s*(?=(?:Atrangii|Netflix|Hotstar|Amazon|Zee5|SonyLiv|Series|WEB-DL|480p|720p|1080p|2160p|Complete|Full))"""), "")
+
+        // Remove OTT platforms e.g. Netflix, JioHotstar, etc.
+        t = t.replace(Regex("""(?i)\b(?:NETFLIX|Netflix|JioHotstar|Hotstar|Atrangii|Amazon(?:\s*Prime)?|Zee5|SonyLiv|Apple\s*TV\+?)\s*(?:Series|Korean Drama|Drama)?\b"""), "")
+
+        // Remove bracketed audio info
+        t = t.replace(Regex("""(?i)\[(?:Hindi|English|Tamil|Telugu|Malayalam|Kannada|Chinese|Dutch|Korean|Japanese|Dual|Multi)[^\]]*\]"""), "")
+        t = t.replace(Regex("""(?i)\[[xX]264/ESubs?\]"""), "")
+        t = t.replace(Regex("""(?i)\[ESubs?\]"""), "")
+
+        // Remove video quality, codecs, sources
+        t = t.replace(Regex("""(?i)\b(?:480p|720p|1080p|2160p|4K|SDR|HDR|DV|10Bit|x264|x265|HEVC|DS4K|WEB-DL|WEBRip|HDRip|BluRay|HDTV)\b"""), "")
+        t = t.replace(Regex("""(?i)\b(?:Dual\s*Audio|Multi\s*Audio|Hindi\s*Dubbed|UnOfficial\s*Dubbed|Television|Korean\s*Drama)\b"""), "")
+        t = t.replace(Regex("""(?i)\bSeries\b"""), "")
+
+        // Remove standalone release year (preserves Season number)
+        t = t.replace(Regex("""\b(19\d\d|20\d\d)\b"""), "")
+
+        // Clean empty brackets and leftover punctuation
+        t = t.replace(Regex("""\[\s*\]|\(\s*\)"""), "")
+            .replace(Regex("""[\s|/•\-–—]+$"""), "")
+            .replace(Regex("""^[\s|/•\-–—]+"""), "")
+            .replace(Regex("""\s{2,}"""), " ")
             .trim()
+
+        return t.ifBlank { raw.trim() }
     }
 
     private fun isTvSeries(title: String, url: String): Boolean {
@@ -283,7 +324,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             if (!response.isSuccessful) return null
             val doc = response.document
 
-            val rawTitle = doc.selectFirst("h1.entry-title, h1, title")?.text() ?: "Unknown"
+            val rawTitle = doc.selectFirst("h1.entry-title, h1.post-title, h1, title")?.text() ?: "Unknown"
             val title = cleanTitle(rawTitle)
             val year = extractYear(rawTitle)
             val isSeries = isTvSeries(rawTitle, url)
@@ -291,28 +332,39 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
             // Poster extraction
             val posterUrl = doc.selectFirst("img[src*='tmdb.org']")?.attr("src")
-                ?: doc.selectFirst(".entry-content img")?.attr("src")
+                ?: doc.selectFirst(".entry-content img, .page-body img")?.attr("src")
 
             // Plot extraction
-            val plot = doc.selectFirst("h3:contains(Storyline) + p, p:contains(Storyline)")?.text()
+            val plot = doc.selectFirst(
+                "h3:contains(Storyline) ~ p, h3:contains(Storyline) ~ h5, " +
+                "h4:contains(Storyline) ~ p, h4:contains(Storyline) ~ h5, " +
+                "p:contains(Storyline), h5:contains(Storyline), div:contains(Storyline)"
+            )?.text()
                 ?.replace(Regex("""(?i)^.*Storyline\s*:?-?\s*"""), "")
+                ?.replace(Regex("""^[\s♦:–-]+"""), "")
+                ?.replace(Regex("""(?i)\s*Download\s+.*$"""), "")
                 ?.trim()
 
             // Rating
-            val ratingText = doc.selectFirst("div:contains(iMDB Rating)")?.text()
+            val ratingText = doc.selectFirst("div:contains(iMDB Rating), p:contains(iMDB Rating)")?.text()
             val ratingMatch = Regex("""(\d+(?:\.\d+)?)\s*/\s*10""").find(ratingText ?: "")
             val scoreVal = ratingMatch?.groupValues?.get(1)?.toDoubleOrNull()
 
             // Tags / Genres
-            val genreText = doc.selectFirst("div:contains(Genre:)")?.text()
+            val genreText = doc.selectFirst("div:contains(Genre:), p:contains(Genre:)")?.text()
             val genres = genreText?.substringAfter("Genre:")?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
 
             // Actors
-            val starsText = doc.selectFirst("div:contains(Stars:)")?.text()
+            val starsText = doc.selectFirst("div:contains(Stars:), p:contains(Stars:)")?.text()
             val actors = starsText?.substringAfter("Stars:")?.split(",")?.map { ActorData(Actor(it.trim(), null)) }
 
+            // Determine initial season from title or url
+            val urlSeason = Regex("""(?i)season[-_ ]*0*(\d+)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
+            val titleSeason = Regex("""(?i)\b(?:Season|S)\s*0*(\d+)\b""").find(rawTitle)?.groupValues?.get(1)?.toIntOrNull()
+            var currentSeason = titleSeason ?: urlSeason ?: 1
+
             // Parse download anchors and season context
-            val contentElem = doc.selectFirst(".entry-content") ?: doc
+            val contentElem = doc.selectFirst(".entry-content, .page-body") ?: doc
             val allElements = contentElem.select("h1, h2, h3, h4, h5, h6, p, div")
 
             data class ScrapedDownload(
@@ -327,7 +379,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
 
             val scrapedDownloads = mutableListOf<ScrapedDownload>()
             val seenHrefs = mutableSetOf<String>()
-            var currentSeason = 1
+            var currentHeadingQuality: String? = null
 
             for (elem in allElements) {
                 val text = elem.text()
@@ -336,17 +388,24 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     currentSeason = seasonMatch.groupValues[1].toIntOrNull() ?: currentSeason
                 }
 
+                val hqMatch = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(text)?.value
+                if (hqMatch != null && (elem.tagName().matches(Regex("h[1-6]")) || !text.contains("Download", ignoreCase = true))) {
+                    currentHeadingQuality = hqMatch
+                }
+
                 val anchors = elem.select("a[href*='mdrive.'], a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                 for (anchor in anchors) {
                     val href = anchor.attr("href").trim()
                     val linkText = anchor.text().trim()
                     if (href.isBlank() || !href.startsWith("http") || !seenHrefs.add(href)) continue
 
-                    val combinedContext = "$text $linkText"
                     val isSingle = linkText.contains("Single Episode", ignoreCase = true) || href.contains("single", ignoreCase = true)
                     val isZip = linkText.contains("Zip", ignoreCase = true) || href.contains("zip", ignoreCase = true)
-                    val quality = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(combinedContext)?.value
-                    val size = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(combinedContext)?.groupValues?.get(1)
+
+                    val linkQuality = Regex("""\b(2160p|4k|1080p|720p|480p)\b""", RegexOption.IGNORE_CASE).find(linkText)?.value
+                        ?: currentHeadingQuality
+                    val linkSize = Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(linkText)?.groupValues?.get(1)
+                        ?: Regex("""\[([0-9.]+\s*(?:GB|MB))\]""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)
 
                     scrapedDownloads.add(
                         ScrapedDownload(
@@ -355,8 +414,8 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                             url = href,
                             isSingleEpisode = isSingle,
                             isZip = isZip,
-                            quality = quality,
-                            size = size
+                            quality = linkQuality,
+                            size = linkSize
                         )
                     )
                 }
@@ -375,7 +434,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                 val seasonEpDownloadsMap = mutableMapOf<Int, MutableList<MovieDownloadLink>>()
                                 val seasonEpQualitiesMap = mutableMapOf<Int, MutableSet<String>>()
 
-                                // Concurrently fetch ALL quality archives for this season to show ALL links
+                                // Concurrently fetch ALL quality archives for this season
                                 coroutineScope {
                                     seasonLinks.map { archive ->
                                         async {
@@ -383,12 +442,13 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                                 val epResp = app.get(archive.url, headers = requestHeaders, timeout = 12L)
                                                 if (epResp.isSuccessful) {
                                                     val epDoc = epResp.document
-                                                    val epContent = epDoc.selectFirst(".entry-content") ?: epDoc
+                                                    val epContent = epDoc.selectFirst(".entry-content, .page-body") ?: epDoc
                                                     val epElems = epContent.select("h1, h2, h3, h4, h5, h6, p, div")
 
                                                     var currentEpNum = 1
                                                     var currentQuality = archive.quality
-                                                    var currentSize = archive.size
+                                                    var currentSize: String? = null
+                                                    val seenLinksInArchive = mutableSetOf<String>()
 
                                                     for (el in epElems) {
                                                         val elText = el.text()
@@ -404,11 +464,9 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                                         val links = el.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                                                         for (link in links) {
                                                             val h = link.attr("href").trim()
-                                                            val t = link.text().trim()
-                                                            if (h.isNotBlank() && h.startsWith("http")) {
-                                                                val epLabel = "${archive.text} ${currentQuality ?: ""} ${if (currentSize != null) "[$currentSize]" else ""}".trim()
+                                                            if (h.isNotBlank() && h.startsWith("http") && seenLinksInArchive.add(h)) {
                                                                 val itemDl = MovieDownloadLink(
-                                                                    name = epLabel.ifBlank { "Episode $currentEpNum" },
+                                                                    name = "Episode $currentEpNum",
                                                                     url = h,
                                                                     quality = currentQuality,
                                                                     size = currentSize
@@ -428,12 +486,10 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                                         val allEpAnchors = epDoc.select("a[href*='hubcloud.'], a[href*='hubcloud'], a[href*='hubc.'], a[href*='gdflix.'], a[href*='only-apis.com'], a[href*='only-apis']")
                                                         for ((idx, anchor) in allEpAnchors.withIndex()) {
                                                             val h = anchor.attr("href").trim()
-                                                            val t = anchor.text().trim()
-                                                            if (h.isNotBlank() && h.startsWith("http")) {
+                                                            if (h.isNotBlank() && h.startsWith("http") && seenLinksInArchive.add(h)) {
                                                                 val epN = idx + 1
-                                                                val epLabel = "${archive.text} ${archive.quality ?: ""}".trim()
                                                                 val itemDl = MovieDownloadLink(
-                                                                    name = epLabel.ifBlank { "Episode $epN" },
+                                                                    name = "Episode $epN",
                                                                     url = h,
                                                                     quality = archive.quality,
                                                                     size = archive.size
@@ -463,14 +519,12 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                             MoviesDriveHubCloud.getQualityInt(it.quality ?: it.name)
                                         }
                                     )
-                                    val distinctQualities = sortedLinkList.mapNotNull { it.quality }.distinct()
-                                    val qSummary = if (distinctQualities.isNotEmpty()) " (${distinctQualities.joinToString(", ")})" else ""
                                     val epPayload = mapper.writeValueAsString(sortedLinkList)
 
                                     synchronized(episodesList) {
                                         episodesList.add(
                                             newEpisode(epPayload) {
-                                                this.name = "Episode $epNum$qSummary"
+                                                this.name = "Episode $epNum"
                                                 this.season = seasonNum
                                                 this.episode = epNum
                                                 this.posterUrl = posterUrl
@@ -494,11 +548,11 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                     )
                     for ((idx, dl) in directDownloads.withIndex()) {
                         val payload = mapper.writeValueAsString(
-                            listOf(MovieDownloadLink(name = dl.text, url = dl.url, quality = dl.quality, size = dl.size))
+                            listOf(MovieDownloadLink(name = "Episode ${idx + 1}", url = dl.url, quality = dl.quality, size = dl.size))
                         )
                         episodesList.add(
                             newEpisode(payload) {
-                                this.name = "${dl.text} ${dl.quality ?: ""} ${if (dl.size != null) "[${dl.size}]" else ""}".trim()
+                                this.name = "Episode ${idx + 1}"
                                 this.season = dl.season
                                 this.episode = idx + 1
                                 this.posterUrl = posterUrl
@@ -515,13 +569,13 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                 )
                 for ((idx, pack) in zipPacks.withIndex()) {
                     val packPayload = mapper.writeValueAsString(
-                        listOf(MovieDownloadLink(name = pack.text, url = pack.url, quality = pack.quality, size = pack.size))
+                        listOf(MovieDownloadLink(name = "Zip Pack", url = pack.url, quality = pack.quality, size = pack.size))
                     )
+                    val resStr = if (!pack.quality.isNullOrBlank()) " • ${pack.quality}" else ""
+                    val sizeStr = if (!pack.size.isNullOrBlank()) " [${pack.size}]" else ""
                     episodesList.add(
                         newEpisode(packPayload) {
-                            val resStr = if (pack.quality != null) " • ${pack.quality}" else ""
-                            val sizeStr = if (pack.size != null) " • [${pack.size}]" else ""
-                            this.name = "📦 [ZIP PACK] ${pack.text}$resStr$sizeStr"
+                            this.name = "📦 [ZIP PACK]$resStr$sizeStr".trim()
                             this.season = 0
                             this.episode = idx + 1
                             this.posterUrl = posterUrl
@@ -542,7 +596,7 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
             } else {
                 // Movie: Gather all download items sorted by decreasing file size
                 val downloadItems = scrapedDownloads.filter { !it.isZip }.map {
-                    MovieDownloadLink(name = it.text, url = it.url, quality = it.quality, size = it.size)
+                    MovieDownloadLink(name = it.quality ?: "Download", url = it.url, quality = it.quality, size = it.size)
                 }.sortedWith(
                     compareByDescending<MovieDownloadLink> {
                         MoviesDriveHubCloud.parseSizeToBytes(it.size ?: it.name, MoviesDriveHubCloud.getQualityInt(it.quality ?: it.name))
@@ -632,20 +686,21 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
                                 val archiveDoc = archiveResp.document
                                 val hubLinks = archiveDoc.select("a[href*='hubcloud'], a[href*='hubc']")
                                 val gdflixLinks = archiveDoc.select("a[href*='gdflix'], a[href*='only-apis']")
+                                val seenInArchive = mutableSetOf<String>()
 
                                 coroutineScope {
                                     val t1 = async {
                                         for (hubLink in hubLinks) {
-                                            val hubUrl = hubLink.attr("href")
-                                            if (hubUrl.isNotBlank()) {
+                                            val hubUrl = hubLink.attr("href").trim()
+                                            if (hubUrl.isNotBlank() && seenInArchive.add(hubUrl)) {
                                                 MoviesDriveHubCloud.resolveHubCloud(hubUrl, item.name, item.quality, item.size, itemCollector)
                                             }
                                         }
                                     }
                                     val t2 = async {
                                         for (gdfLink in gdflixLinks) {
-                                            val gdfUrl = gdfLink.attr("href")
-                                            if (gdfUrl.isNotBlank()) {
+                                            val gdfUrl = gdfLink.attr("href").trim()
+                                            if (gdfUrl.isNotBlank() && seenInArchive.add(gdfUrl)) {
                                                 MoviesDriveHubCloud.resolveGDFlix(gdfUrl, item.name, item.quality, item.size, itemCollector)
                                             }
                                         }

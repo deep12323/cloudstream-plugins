@@ -68,6 +68,59 @@ open class MoviesDriveHubCloud : ExtractorApi() {
             }
         }
 
+        fun cleanSizeString(rawSize: String?): String? {
+            if (rawSize.isNullOrBlank()) return null
+            val match = Regex("""([0-9]+(?:\.[0-9]+)?)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB|B)\b""", RegexOption.IGNORE_CASE).find(rawSize)
+            return match?.let {
+                val num = it.groupValues[1]
+                val unit = it.groupValues[2].uppercase()
+                "$num $unit"
+            }
+        }
+
+        fun formatLinkTitle(
+            server: String,
+            qualityStr: String?,
+            sizeStr: String?,
+            filenameOrTitle: String?
+        ): Pair<String, Int> {
+            val combined = "$qualityStr $filenameOrTitle"
+
+            // 1. Resolution & QualityInt
+            val resMatch = Regex("""\b(2160p|4k|1440p|1080p|720p|480p|360p)\b""", RegexOption.IGNORE_CASE).find(combined)
+            val resFound = resMatch?.value?.lowercase()
+            val (resolutionText, qualityInt) = when {
+                resFound?.contains("2160") == true || resFound?.contains("4k") == true -> Pair("4K 2160p", Qualities.P2160.value)
+                resFound?.contains("1440") == true -> Pair("1440p", Qualities.P1440.value)
+                resFound?.contains("1080") == true -> Pair("1080p", Qualities.P1080.value)
+                resFound?.contains("720") == true -> Pair("720p", Qualities.P720.value)
+                resFound?.contains("480") == true -> Pair("480p", Qualities.P480.value)
+                resFound?.contains("360") == true -> Pair("360p", Qualities.P360.value)
+                else -> Pair("", Qualities.Unknown.value)
+            }
+
+            // 2. Codec / Video attributes
+            val codec = when {
+                combined.contains("10bit", ignoreCase = true) && combined.contains("hevc", ignoreCase = true) -> "10Bit HEVC"
+                combined.contains("10bit", ignoreCase = true) -> "10Bit"
+                combined.contains("hevc", ignoreCase = true) || combined.contains("x265", ignoreCase = true) -> "HEVC"
+                combined.contains("ds4k", ignoreCase = true) -> "DS4K"
+                else -> null
+            }
+
+            // 3. Clean single file size
+            val sizeClean = cleanSizeString(sizeStr) ?: cleanSizeString(filenameOrTitle)
+
+            val parts = mutableListOf<String>()
+            parts.add(server.trim())
+            if (resolutionText.isNotBlank()) parts.add(resolutionText)
+            if (codec != null && !resolutionText.contains(codec, ignoreCase = true)) parts.add(codec)
+            if (sizeClean != null) parts.add("[$sizeClean]")
+
+            val linkTitle = parts.joinToString(" • ")
+            return Pair(linkTitle, qualityInt)
+        }
+
         suspend fun resolveHubCloud(
             hubUrl: String,
             linkName: String?,
@@ -82,8 +135,8 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 )
 
                 // If hubUrl is already a direct gateway link, use it directly
-                val nextUrl = if (hubUrl.contains("hubcloud.php")) {
-                    hubUrl
+                val (nextUrl, initialHtml) = if (hubUrl.contains("hubcloud.php")) {
+                    Pair(hubUrl, "")
                 } else {
                     val resp1 = app.get(hubUrl, headers = headers, timeout = 12L)
                     val html1 = resp1.text
@@ -97,7 +150,7 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                     }
                     if (gateway == null) return false
 
-                    if (!gateway.startsWith("http")) {
+                    val fullGw = if (!gateway.startsWith("http")) {
                         if (gateway.startsWith("/")) {
                             val baseUri = java.net.URI(hubUrl)
                             "${baseUri.scheme}://${baseUri.host}$gateway"
@@ -107,40 +160,46 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                     } else {
                         gateway
                     }
+                    Pair(fullGw, html1)
                 }
 
                 val resp2 = app.get(nextUrl, headers = headers + ("Referer" to hubUrl), timeout = 12L)
-                val html2 = resp2.text
+                val rawHtml2 = resp2.text
+                val html2 = rawHtml2.replace(Regex("""<!--[\s\S]*?-->"""), "")
 
-                // Extract file size from HTML if not provided or to refine
+                // Extract file size from HTML if available
                 val htmlSize = Regex("""(?i)<i[^>]*id=["']size["'][^>]*>([^<]+)</i>""").find(html2)?.groupValues?.get(1)?.trim()
+                    ?: Regex("""(?i)<i[^>]*id=["']size["'][^>]*>([^<]+)</i>""").find(initialHtml)?.groupValues?.get(1)?.trim()
                     ?: Regex("""(?i)File Size\s*<i[^>]*>([^<]+)</i>""").find(html2)?.groupValues?.get(1)?.trim()
+                    ?: Regex("""(?i)File Size\s*<i[^>]*>([^<]+)</i>""").find(initialHtml)?.groupValues?.get(1)?.trim()
+
                 val effectiveSize = when {
-                    !sizeStr.isNullOrBlank() -> sizeStr.trim()
                     !htmlSize.isNullOrBlank() && !htmlSize.equals("NAN", ignoreCase = true) -> htmlSize.trim()
+                    !sizeStr.isNullOrBlank() -> sizeStr.trim()
                     else -> null
                 }
 
-                val quality = getQualityInt(qualityStr ?: linkName)
-                val cleanLabel = linkName?.trim()?.ifBlank { null }
-                val sizeTag = if (!effectiveSize.isNullOrBlank() && !(cleanLabel?.contains(effectiveSize, ignoreCase = true) ?: false)) " [$effectiveSize]" else ""
-                val resPrefix = if (!qualityStr.isNullOrBlank() && !(cleanLabel?.contains(qualityStr, ignoreCase = true) ?: false)) "$qualityStr " else ""
-                val displayTag = cleanLabel ?: "$resPrefix$sizeTag".trim()
+                val pageTitle = Regex("""<title>([^<]+)</title>""", RegexOption.IGNORE_CASE).find(rawHtml2)?.groupValues?.get(1)
+                    ?: Regex("""<title>([^<]+)</title>""", RegexOption.IGNORE_CASE).find(initialHtml)?.groupValues?.get(1)
+                    ?: ""
+                val filename = Regex("""filename=["']?([^"'>\s]+)""", RegexOption.IGNORE_CASE).find(rawHtml2)?.groupValues?.get(1)
+                    ?: Regex("""filename=["']?([^"'>\s]+)""", RegexOption.IGNORE_CASE).find(initialHtml)?.groupValues?.get(1)
+                    ?: ""
+                val combinedFileInfo = "$linkName $pageTitle $filename"
 
                 var foundAny = false
                 val seenUrls = mutableSetOf<String>()
 
                 // 1. Direct FSL Server (Cloudflare R2 Storage)
                 val fslMatches = Regex("""href=["'](https?://[^"'\s]*(?:\.cloudflarestorage\.com|\.r2\.dev)[^"'\s]*)["']""").findAll(html2)
-                for ((index, match) in fslMatches.withIndex()) {
+                for (match in fslMatches) {
                     val fslUrl = match.groupValues[1].replace("&amp;", "&")
                     if (seenUrls.add(fslUrl)) {
-                        val serverTag = if (index == 0) "HubCloud FSL" else "HubCloud FSL ${index + 1}"
-                        val linkTitle = if (cleanLabel != null) "$serverTag • $cleanLabel$sizeTag" else "$serverTag $displayTag"
+                        val (linkTitle, quality) = formatLinkTitle("HubCloud FSL", qualityStr, effectiveSize, combinedFileInfo)
                         callback(
                             newExtractorLink(
-                                source = serverTag,
-                                name = linkTitle.trim(),
+                                source = "HubCloud FSL",
+                                name = linkTitle,
                                 url = fslUrl,
                                 type = ExtractorLinkType.VIDEO
                             ) {
@@ -174,11 +233,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                             !directGoogleUrl.contains("telegram") &&
                             (directGoogleUrl.contains("googleusercontent.com") || directGoogleUrl.contains("drive.google.com") || directGoogleUrl.contains(".mkv") || directGoogleUrl.contains(".mp4") || directGoogleUrl.contains("dl.php")) &&
                             seenUrls.add(directGoogleUrl)) {
-                            val linkTitle = if (cleanLabel != null) "HubCloud 10Gbps • $cleanLabel$sizeTag" else "HubCloud 10Gbps $displayTag"
+                            val (linkTitle, quality) = formatLinkTitle("HubCloud 10Gbps", qualityStr, effectiveSize, combinedFileInfo)
                             callback(
                                 newExtractorLink(
                                     source = "HubCloud 10Gbps",
-                                    name = linkTitle.trim(),
+                                    name = linkTitle,
                                     url = directGoogleUrl,
                                     type = ExtractorLinkType.VIDEO
                                 ) {
@@ -197,11 +256,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                     try {
                         val decoded = String(android.util.Base64.decode(hbMatch.groupValues[1], android.util.Base64.DEFAULT)).replace("&amp;", "&")
                         if (decoded.startsWith("http") && seenUrls.add(decoded)) {
-                            val linkTitle = if (cleanLabel != null) "HubCloud Fast • $cleanLabel$sizeTag" else "HubCloud Fast $displayTag"
+                            val (linkTitle, quality) = formatLinkTitle("HubCloud Fast", qualityStr, effectiveSize, combinedFileInfo)
                             callback(
                                 newExtractorLink(
                                     source = "HubCloud Stream",
-                                    name = linkTitle.trim(),
+                                    name = linkTitle,
                                     url = decoded,
                                     type = ExtractorLinkType.VIDEO
                                 ) {
@@ -223,11 +282,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                         // 4a. Pixeldrain Bypass CDN (Unlimited speed & bypasses daily limits)
                         val bypassUrl = "https://cdn.pixeldrain.eu.cc/$fileId?download"
                         if (seenUrls.add(bypassUrl)) {
-                            val bypassTitle = if (cleanLabel != null) "PixelDrain Fast (Bypass) • $cleanLabel$sizeTag" else "PixelDrain Fast (Bypass) $displayTag"
+                            val (linkTitle, quality) = formatLinkTitle("PixelDrain Fast", qualityStr, effectiveSize, combinedFileInfo)
                             callback(
                                 newExtractorLink(
                                     source = "PixelDrain Fast",
-                                    name = bypassTitle.trim(),
+                                    name = linkTitle,
                                     url = bypassUrl,
                                     type = ExtractorLinkType.VIDEO
                                 ) {
@@ -241,11 +300,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                         // 4b. Direct PixelDrain API fallback
                         val directPxl = "https://pixeldrain.com/api/file/$fileId"
                         if (seenUrls.add(directPxl)) {
-                            val linkTitle = if (cleanLabel != null) "PixelDrain • $cleanLabel$sizeTag" else "PixelDrain $displayTag"
+                            val (linkTitle, quality) = formatLinkTitle("PixelDrain", qualityStr, effectiveSize, combinedFileInfo)
                             callback(
                                 newExtractorLink(
                                     source = "PixelDrain",
-                                    name = linkTitle.trim(),
+                                    name = linkTitle,
                                     url = directPxl,
                                     type = ExtractorLinkType.VIDEO
                                 ) {
@@ -281,13 +340,21 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 val resp = app.get(gdflixUrl, headers = headers, timeout = 12L)
                 if (!resp.isSuccessful) return false
                 val finalUrl = resp.okhttpResponse.request.url.toString()
-                val html = resp.text
+                val rawHtml = resp.text
+                val html = rawHtml.replace(Regex("""<!--[\s\S]*?-->"""), "")
 
-                val quality = getQualityInt(qualityStr ?: linkName)
-                val cleanLabel = linkName?.trim()?.ifBlank { null }
-                val sizeTag = if (!sizeStr.isNullOrBlank() && !(cleanLabel?.contains(sizeStr, ignoreCase = true) ?: false)) " [$sizeStr]" else ""
-                val resPrefix = if (!qualityStr.isNullOrBlank() && !(cleanLabel?.contains(qualityStr, ignoreCase = true) ?: false)) "$qualityStr " else ""
-                val displayTag = cleanLabel ?: "$resPrefix$sizeTag".trim()
+                val pageTitle = Regex("""<title>([^<]+)</title>""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1) ?: ""
+                val filename = Regex("""filename=["']?([^"'>\s]+)""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
+                    ?: Regex("""/([^/]+\.(?:mkv|mp4))""", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
+                    ?: ""
+                val combinedFileInfo = "$linkName $pageTitle $filename"
+
+                val htmlSize = Regex("""(?i)Size\s*:\s*([0-9.]+\s*(?:GB|MB|KB))""").find(html)?.groupValues?.get(1)?.trim()
+                val effectiveSize = when {
+                    !htmlSize.isNullOrBlank() && !htmlSize.equals("NAN", ignoreCase = true) -> htmlSize.trim()
+                    !sizeStr.isNullOrBlank() -> sizeStr.trim()
+                    else -> null
+                }
 
                 var foundAny = false
                 val seenUrls = mutableSetOf<String>()
@@ -297,11 +364,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 for (match in r2PagesMatches) {
                     val decoded = URLDecoder.decode(match.groupValues[1], "UTF-8")
                     if (decoded.startsWith("http") && seenUrls.add(decoded)) {
-                        val title = if (cleanLabel != null) "GDFlix R2 • $cleanLabel$sizeTag" else "GDFlix R2 $displayTag"
+                        val (linkTitle, quality) = formatLinkTitle("GDFlix R2", qualityStr, effectiveSize, combinedFileInfo)
                         callback(
                             newExtractorLink(
                                 source = "GDFlix R2",
-                                name = title.trim(),
+                                name = linkTitle,
                                 url = decoded,
                                 type = ExtractorLinkType.VIDEO
                             ) {
@@ -317,11 +384,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                 for (match in directR2Matches) {
                     val r2Url = match.groupValues[1].replace("&amp;", "&")
                     if (seenUrls.add(r2Url)) {
-                        val title = if (cleanLabel != null) "GDFlix R2 • $cleanLabel$sizeTag" else "GDFlix R2 $displayTag"
+                        val (linkTitle, quality) = formatLinkTitle("GDFlix R2", qualityStr, effectiveSize, combinedFileInfo)
                         callback(
                             newExtractorLink(
                                 source = "GDFlix R2",
-                                name = title.trim(),
+                                name = linkTitle,
                                 url = r2Url,
                                 type = ExtractorLinkType.VIDEO
                             ) {
@@ -351,11 +418,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                             !googleUrl.contains("t.me") &&
                             !googleUrl.contains("telegram") &&
                             seenUrls.add(googleUrl)) {
-                            val title = if (cleanLabel != null) "GDFlix 10Gbps • $cleanLabel$sizeTag" else "GDFlix 10Gbps $displayTag"
+                            val (linkTitle, quality) = formatLinkTitle("GDFlix 10Gbps", qualityStr, effectiveSize, combinedFileInfo)
                             callback(
                                 newExtractorLink(
                                     source = "GDFlix 10Gbps",
-                                    name = title.trim(),
+                                    name = linkTitle,
                                     url = googleUrl,
                                     type = ExtractorLinkType.VIDEO
                                 ) {
@@ -377,11 +444,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                     // Fast bypass mirror
                     val bypassUrl = "https://cdn.pixeldrain.eu.cc/$fileId?download"
                     if (seenUrls.add(bypassUrl)) {
-                        val bypassTitle = if (cleanLabel != null) "GDFlix PixelDrain (Bypass) • $cleanLabel$sizeTag" else "GDFlix PixelDrain (Bypass) $displayTag"
+                        val (linkTitle, quality) = formatLinkTitle("PixelDrain Fast", qualityStr, effectiveSize, combinedFileInfo)
                         callback(
                             newExtractorLink(
                                 source = "PixelDrain Fast",
-                                name = bypassTitle.trim(),
+                                name = linkTitle,
                                 url = bypassUrl,
                                 type = ExtractorLinkType.VIDEO
                             ) {
@@ -395,11 +462,11 @@ open class MoviesDriveHubCloud : ExtractorApi() {
                     // Direct official link
                     val directPxl = "https://pixeldrain.com/api/file/$fileId"
                     if (seenUrls.add(directPxl)) {
-                        val directTitle = if (cleanLabel != null) "GDFlix PixelDrain • $cleanLabel$sizeTag" else "GDFlix PixelDrain $displayTag"
+                        val (linkTitle, quality) = formatLinkTitle("PixelDrain", qualityStr, effectiveSize, combinedFileInfo)
                         callback(
                             newExtractorLink(
                                 source = "PixelDrain",
-                                name = directTitle.trim(),
+                                name = linkTitle,
                                 url = directPxl,
                                 type = ExtractorLinkType.VIDEO
                             ) {

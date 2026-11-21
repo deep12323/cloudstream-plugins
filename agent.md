@@ -35,7 +35,7 @@ flowchart LR
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
 | **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
-| **MoviesDrive** | `MoviesDrive` | **`5`** | Movies & TV series with HubCloud/GDFlix extraction, Pixeldrain Bypass & mirror search |
+| **MoviesDrive** | `MoviesDrive` | **`6`** | Movies & TV series with HubCloud/GDFlix extraction, Pixeldrain Bypass & mirror search |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
 
 ---
@@ -108,6 +108,24 @@ flowchart LR
      * Updated `loadLinks` to extract both HubCloud and GDFlix links concurrently from `mdrive` archives.
   6. **TV Series Episode Parsing Enhancement**: Expanded episode regex to `(?:^|\b)(?:EP|Episode|E)[\s.-]*0*(\d+)\b` to correctly parse `E01`, `EP-01`, `EP.01`, etc. across all season archives.
   7. **Version Bump**: Bumped to **v5**.
+
+---
+
+### 6. MoviesDrive: Clutter Text Removal, Stream Link Cleanup & Dual-Size Fix (v6)
+* **Problem**:
+  1. Cluttered post titles with raw OTT tags, quality labels, and audio tags (e.g. `Dhindora (Season 2) 2021 [Hindi] NETFLIX Series 480p 720p 1080p 2160p 4K – WEB-DL`).
+  2. Episode names cluttered with resolution lists (e.g. `Episode 1 (4K, 2160p, 1080p, 720p, 480p)` or raw archive labels).
+  3. Storyline/Plot displaying "No Plot Found" due to mismatched HTML tags (`<h5>` after `Storyline`).
+  4. Zip packs in specials displaying duplicated sizes and wrong quality (e.g. `[ZIP PACK] Zip [870MB] 480p. [870MB]`).
+  5. Stream links displaying duplicate file sizes, wrong resolutions at the end, and clutter (e.g. `HubCloud 10Gbps 1080p 10BIT HEVC [1.99 GB] [396.53 MB] 480p`).
+  6. Duplicate links extracted multiple times due to nested element selection in archives.
+* **Solutions**:
+  1. **Advanced Title Cleaner**: `cleanTitle` strips OTT platform tags, video codec/resolution labels, audio brackets, site names, and release years while cleanly preserving Season info (e.g., `Dhindora (Season 2)`).
+  2. **Robust Storyline Extraction**: Targets sibling elements (`h3 ~ h5`, `h3 ~ p`, etc.) and strips decorative symbols, ensuring plot summaries are captured reliably.
+  3. **Clean Episode Names**: Simplified episode labels to standard `Episode $epNum`.
+  4. **Clean Zip Pack Names**: Formatted cleanly as `📦 [ZIP PACK] • $quality [$size]` without duplicate `Zip` or carry-over sizes.
+  5. **Stream Link Title Formatter**: Created `formatLinkTitle` in `HubCloudExtractor` to produce uniform `<Server> • <Resolution> • <Codec> • [<Size>]` titles with exact single file size and accurate `qualityInt`. Stripped HTML comments and prevented duplicate links.
+  6. **Version Bump**: Bumped to **v6** in both `MoviesDrive/build.gradle.kts` and `.github/workflows/build.yml`.
 
 ---
 
