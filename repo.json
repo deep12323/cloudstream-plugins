@@ -1,0 +1,9 @@
+{
+  "name": "cloudstream-plugins",
+  "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/action/extension/materialicons/48dp/2x/baseline_extension_white_48dp.png",
+  "description": "Cloudstream Plugins & Tools Repository",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/plugins.json?v=2"
+  ]
+}
