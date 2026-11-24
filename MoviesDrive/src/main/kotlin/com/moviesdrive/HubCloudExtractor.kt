@@ -118,37 +118,28 @@ open class MoviesDriveHubCloud : ExtractorApi() {
             val sizeClean = cleanSizeString(sizeStr) ?: cleanSizeString(filenameOrTitle)
             val sizeBytes = parseSizeToBytes(sizeClean)
 
-            if (sizeBytes > 0L) {
-                // Correct falsely inherited 1080p/720p on small files
-                if (sizeBytes < 600_000_000L && qualityInt > Qualities.P480.value) {
-                    qualityInt = Qualities.P480.value
-                    resolutionText = "480p"
-                } else if (sizeBytes < 1_100_000_000L && qualityInt > Qualities.P720.value) {
-                    qualityInt = Qualities.P720.value
-                    resolutionText = "720p"
-                } else if (qualityInt == Qualities.Unknown.value) {
-                    when {
-                        sizeBytes < 600_000_000L -> {
-                            qualityInt = Qualities.P480.value
-                            resolutionText = "480p"
-                        }
-                        sizeBytes < 1_900_000_000L -> {
-                            qualityInt = Qualities.P720.value
-                            resolutionText = "720p"
-                        }
-                        sizeBytes < 5_500_000_000L -> {
+            if (sizeBytes > 0L && qualityInt == Qualities.Unknown.value) {
+                when {
+                    sizeBytes < 600_000_000L -> {
+                        qualityInt = Qualities.P480.value
+                        resolutionText = "480p"
+                    }
+                    sizeBytes < 1_900_000_000L -> {
+                        qualityInt = Qualities.P720.value
+                        resolutionText = "720p"
+                    }
+                    sizeBytes < 5_500_000_000L -> {
+                        qualityInt = Qualities.P1080.value
+                        resolutionText = "1080p"
+                    }
+                    else -> {
+                        val is4k = (filenameOrTitle ?: "").contains("4k", ignoreCase = true) || (filenameOrTitle ?: "").contains("2160", ignoreCase = true)
+                        if (is4k) {
+                            qualityInt = Qualities.P2160.value
+                            resolutionText = "4K"
+                        } else {
                             qualityInt = Qualities.P1080.value
                             resolutionText = "1080p"
-                        }
-                        else -> {
-                            val is4k = (filenameOrTitle ?: "").contains("4k", ignoreCase = true) || (filenameOrTitle ?: "").contains("2160", ignoreCase = true)
-                            if (is4k) {
-                                qualityInt = Qualities.P2160.value
-                                resolutionText = "4K"
-                            } else {
-                                qualityInt = Qualities.P1080.value
-                                resolutionText = "1080p"
-                            }
                         }
                     }
                 }
