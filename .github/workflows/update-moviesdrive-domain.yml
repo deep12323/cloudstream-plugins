@@ -1,0 +1,114 @@
+name: Auto Update MoviesDrive Domain
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-domain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update MoviesDrive active domain
+        id: check
+        run: |
+          python3 - <<'EOF'
+          import re
+          import urllib.request
+          import urllib.error
+
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          }
+
+          def fetch(url, timeout=8):
+              req = urllib.request.Request(url, headers=HEADERS)
+              with urllib.request.urlopen(req, timeout=timeout) as resp:
+                  return resp.status, resp.geturl(), resp.read().decode("utf-8", errors="ignore")
+
+          def verify_domain(candidate):
+              clean = candidate.strip().rstrip("/")
+              if not clean.startswith("http"):
+                  return False
+              try:
+                  status, _, body = fetch(f"{clean}/wp-json/", timeout=8)
+                  if status == 200 and ("moviesdrive" in body.lower() or "name" in body.lower()):
+                      return True
+              except Exception:
+                  pass
+              try:
+                  status, _, body = fetch(f"{clean}/", timeout=8)
+                  if status == 200 and "moviesdrive" in body.lower():
+                      return True
+              except Exception:
+                  pass
+              return False
+
+          with open("moviesdrive_domain.txt", "r", encoding="utf-8") as f:
+              current = f.read().strip().rstrip("/")
+
+          print(f"Current domain: {current}")
+          if verify_domain(current):
+              print("Current domain is healthy. No update needed.")
+              raise SystemExit(0)
+
+          new_domain = None
+
+          # 1. Sequential domain probing (e.g. new4 -> new5..new14)
+          m = re.search(r"https?://new(\d+)\.moviesdrive", current, re.I)
+          start_num = int(m.group(1)) if m else 4
+          for n in range(start_num + 1, start_num + 11):
+              candidate = f"https://new{n}.moviesdrive.cyou"
+              print(f"Probing {candidate}...")
+              if verify_domain(candidate):
+                  new_domain = candidate
+                  break
+
+          # 2. Check official redirect mirrors
+          if not new_domain:
+              mirrors = [
+                  "https://moviesdrives.mov",
+                  "https://moviedrive.org",
+                  "https://moviesdrives.cfd",
+              ]
+              for mirror in mirrors:
+                  try:
+                      _, final_url, body = fetch(mirror, timeout=8)
+                      final_clean = final_url.rstrip("/")
+                      if final_clean.startswith("http") and "moviesdrives.bid" not in final_clean and verify_domain(final_clean):
+                          new_domain = final_clean
+                          break
+                      match = re.search(r"https?://(?:new\d*|www\.)?moviesdrive\.[a-z]{2,6}", body, re.I)
+                      if match:
+                          extracted = match.group(0).rstrip("/")
+                          if extracted != current and verify_domain(extracted):
+                              new_domain = extracted
+                              break
+                  except Exception as e:
+                      print(f"Mirror {mirror} failed: {e}")
+
+          if new_domain and new_domain != current:
+              print(f"Updating moviesdrive_domain.txt to: {new_domain}")
+              with open("moviesdrive_domain.txt", "w", encoding="utf-8") as f:
+                  f.write(new_domain)
+          else:
+              print("No working replacement domain found.")
+          EOF
+
+      - name: Commit and push updated domain
+        run: |
+          if [ -n "$(git status --porcelain moviesdrive_domain.txt)" ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add moviesdrive_domain.txt
+            NEW_DOMAIN=$(cat moviesdrive_domain.txt)
+            git commit -m "chore(MoviesDrive): auto-update active domain to ${NEW_DOMAIN}"
+            git push
+          else
+            echo "moviesdrive_domain.txt unchanged."
+          fi

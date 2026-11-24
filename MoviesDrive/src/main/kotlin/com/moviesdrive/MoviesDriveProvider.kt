@@ -292,44 +292,62 @@ class MoviesDriveProvider(private val pluginContext: Context? = null) : MainAPI(
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
 
-        // 1. Primary: Fast Typesense JSON search
-        val typesenseUrl = "$mainUrl/search.php?q=$encodedQuery&page=$page"
-        try {
-            val response = app.get(typesenseUrl, headers = requestHeaders, timeout = 15L)
-            if (response.isSuccessful && response.text.trim().startsWith("{")) {
-                val tsData: TypesenseResponse = mapper.readValue(response.text)
-                val hits = tsData.hits ?: emptyList()
-                val items = hits.mapNotNull { hit ->
-                    val doc = hit.document ?: return@mapNotNull null
-                    val rawTitle = doc.post_title ?: return@mapNotNull null
-                    val permalink = doc.permalink ?: return@mapNotNull null
-                    val fullUrl = if (permalink.startsWith("http")) permalink else "$mainUrl${if (permalink.startsWith("/")) "" else "/"}$permalink"
-                    val title = cleanTitle(rawTitle)
-                    val isSeries = isTvSeries(rawTitle, fullUrl) ||
-                            (doc.category?.any { it.contains("series", ignoreCase = true) || it.contains("web", ignoreCase = true) } == true)
-                    val year = extractYear(rawTitle)
-                    val posterUrl = doc.post_thumbnail
+        fun parseTypesense(body: String): SearchResponseList? {
+            if (!body.trim().startsWith("{")) return null
+            val tsData: TypesenseResponse = mapper.readValue(body)
+            val hits = tsData.hits ?: emptyList()
+            val items = hits.mapNotNull { hit ->
+                val doc = hit.document ?: return@mapNotNull null
+                val rawTitle = doc.post_title ?: return@mapNotNull null
+                val permalink = doc.permalink ?: return@mapNotNull null
+                val fullUrl = if (permalink.startsWith("http")) permalink else "$mainUrl${if (permalink.startsWith("/")) "" else "/"}$permalink"
+                val title = cleanTitle(rawTitle)
+                val isSeries = isTvSeries(rawTitle, fullUrl) ||
+                        (doc.category?.any { it.contains("series", ignoreCase = true) || it.contains("web", ignoreCase = true) } == true)
+                val year = extractYear(rawTitle)
+                val posterUrl = doc.post_thumbnail
 
-                    if (isSeries) {
-                        newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
-                            this.posterUrl = posterUrl
-                            this.year = year
-                        }
-                    } else {
-                        newMovieSearchResponse(title, fullUrl, TvType.Movie) {
-                            this.posterUrl = posterUrl
-                            this.year = year
-                        }
+                if (isSeries) {
+                    newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
+                        this.posterUrl = posterUrl
+                        this.year = year
+                    }
+                } else {
+                    newMovieSearchResponse(title, fullUrl, TvType.Movie) {
+                        this.posterUrl = posterUrl
+                        this.year = year
                     }
                 }
+            }
+            if (items.isEmpty()) return null
+            val found = tsData.found ?: 0
+            return newSearchResponseList(items, (page * 15) < found)
+        }
 
-                if (items.isNotEmpty()) {
-                    val found = tsData.found ?: 0
-                    val hasNext = (page * 15) < found
-                    return newSearchResponseList(items, hasNext)
+        // 1. Primary: Fast Typesense JSON search
+        val currentBase = mainUrl.removeSuffix("/")
+        val typesenseUrl = "$currentBase/search.php?q=$encodedQuery&page=$page"
+        try {
+            var response = app.get(typesenseUrl, headers = requestHeaders, timeout = 15L)
+            if (!response.isSuccessful) {
+                val newDomain = resolveActiveDomain()
+                if (newDomain != currentBase) {
+                    response = app.get("$newDomain/search.php?q=$encodedQuery&page=$page", headers = requestHeaders, timeout = 15L)
                 }
             }
+            if (response.isSuccessful) {
+                parseTypesense(response.text)?.let { return it }
+            }
         } catch (e: Exception) {
+            val newDomain = resolveActiveDomain()
+            if (newDomain != currentBase) {
+                try {
+                    val retryResp = app.get("$newDomain/search.php?q=$encodedQuery&page=$page", headers = requestHeaders, timeout = 15L)
+                    if (retryResp.isSuccessful) {
+                        parseTypesense(retryResp.text)?.let { return it }
+                    }
+                } catch (_: Exception) {}
+            }
             e.printStackTrace()
         }
 
