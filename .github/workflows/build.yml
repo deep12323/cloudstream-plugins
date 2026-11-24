@@ -24,7 +24,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Providers
-        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :DesireMovies:make :SystemFont:make
+        run: ./gradlew :TorrServe:make :ExternalPlayers:make :SkipTorrentWarning:make :PopupBlocker:make :H2RxDMovies:make :AllInOneLiveTV:make :MoviesDrive:make :DesireMovies:make :SystemFont:make :NetflixPlayerUI:make
 
       - name: Generate repo.json and plugins.json
         run: |
@@ -157,6 +157,19 @@ jobs:
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Forces CloudStream to adopt your device'\''s native system font instead of hardcoded Google Sans across all UI elements"
+            },
+            {
+              "name": "Netflix Player UI",
+              "internalName": "NetflixPlayerUI",
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/NetflixPlayerUI.cs3?v=1",
+              "tvTypes": ["Others"],
+              "language": "en",
+              "iconUrl": "https://raw.githubusercontent.com/google/material-design-icons/master/png/av/play_circle_filled/materialicons/48dp/2x/baseline_play_circle_filled_white_48dp.png",
+              "apiVersion": 1,
+              "version": 1,
+              "authors": ["deepu2135"],
+              "status": 1,
+              "description": "Transforms CloudStream'\''s video player into a sleek Netflix-style UI (Netflix Red seekbar, gradient scrims, minimalist controls, and Skip Intro button)"
             }
           ]' > builds/plugins.json
 
