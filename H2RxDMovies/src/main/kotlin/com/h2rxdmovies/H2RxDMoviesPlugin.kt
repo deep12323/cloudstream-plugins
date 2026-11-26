@@ -10,5 +10,11 @@ class H2RxDMoviesPlugin : Plugin() {
         registerMainAPI(H2RxDMoviesProvider())
         registerExtractorAPI(HubCloud())
         registerExtractorAPI(HubCloudIst())
+        registerExtractorAPI(HubCloudMov())
+        registerExtractorAPI(HubCloudOne())
+        registerExtractorAPI(HubCloudCx())
+        registerExtractorAPI(HubCloudFoo())
+        registerExtractorAPI(HubCloudFans())
+        registerExtractorAPI(H2RxDMoviesGDFlix())
     }
 }

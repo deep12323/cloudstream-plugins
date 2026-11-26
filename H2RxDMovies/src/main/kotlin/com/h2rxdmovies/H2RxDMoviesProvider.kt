@@ -10,6 +10,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.net.URLEncoder
+import java.util.Collections
 
 class H2RxDMoviesProvider : MainAPI() {
     override var mainUrl = "https://h2r-xdmovies.pages.dev"
@@ -84,8 +85,8 @@ class H2RxDMoviesProvider : MainAPI() {
         }
 
         try {
-            val response = app.get(requestUrl, headers = requestHeaders, timeout = 15L)
-            if (!response.isSuccessful) return null
+            val response = HubCloud.retryGet(requestUrl, headers = requestHeaders, timeout = 20L)
+            if (response == null || !response.isSuccessful) return null
 
             val catalog: CatalogResponse = mapper.readValue(response.text)
             val items = catalog.results.mapNotNull { it.toSearchResponse() }
@@ -110,8 +111,8 @@ class H2RxDMoviesProvider : MainAPI() {
         val searchUrl = "$apiUrl/api/v1/search?q=$encodedQuery&page=$page&limit=25"
 
         try {
-            val response = app.get(searchUrl, headers = requestHeaders, timeout = 15L)
-            if (!response.isSuccessful) return newSearchResponseList(emptyList(), false)
+            val response = HubCloud.retryGet(searchUrl, headers = requestHeaders, timeout = 20L)
+            if (response == null || !response.isSuccessful) return newSearchResponseList(emptyList(), false)
 
             val catalog: CatalogResponse = mapper.readValue(response.text)
             val items = catalog.results.mapNotNull { it.toSearchResponse() }
@@ -135,8 +136,8 @@ class H2RxDMoviesProvider : MainAPI() {
         val detailUrl = "$apiUrl/api/v1/media/$id"
 
         try {
-            val detailResp = app.get(detailUrl, headers = requestHeaders, timeout = 15L)
-            if (!detailResp.isSuccessful) return null
+            val detailResp = HubCloud.retryGet(detailUrl, headers = requestHeaders, timeout = 20L)
+            if (detailResp == null || !detailResp.isSuccessful) return null
 
             val mediaDetail: MediaDetailResponse = mapper.readValue(detailResp.text)
             val media = mediaDetail.data ?: return null
@@ -146,15 +147,15 @@ class H2RxDMoviesProvider : MainAPI() {
             val type = if (isSeries) TvType.TvSeries else TvType.Movie
 
             if (isSeries) {
-                val dlResp = app.get("$apiUrl/api/v1/series/$id/downloads", headers = requestHeaders, timeout = 15L)
+                val dlResp = HubCloud.retryGet("$apiUrl/api/v1/series/$id/downloads", headers = requestHeaders, timeout = 20L)
                 val episodesList = mutableListOf<Episode>()
+                var packEpisodeIndex = 1
 
-                if (dlResp.isSuccessful) {
+                if (dlResp != null && dlResp.isSuccessful) {
                     val seriesData: SeriesDownloadsResponse = mapper.readValue(dlResp.text)
                     for (season in seriesData.seasons) {
                         val seasonNum = season.season
 
-                        // Individual episodes
                         for (ep in season.episodes) {
                             val epNum = ep.episode
                             val epPayload = mapper.writeValueAsString(ep.downloads)
@@ -168,8 +169,8 @@ class H2RxDMoviesProvider : MainAPI() {
                             )
                         }
 
-                        // Season packs / batch zips (placed in Specials / Season 0)
-                        for ((index, pack) in season.packs.withIndex()) {
+                        // Place season zip/batch packs in Specials (Season 0) with unique episode indices.
+                        for (pack in season.packs) {
                             val cleanName = pack.file_name ?: "Season Pack"
                             val sizeStr = if (!pack.size.isNullOrBlank()) " • ${pack.size}" else ""
                             val resStr = if (!pack.resolution.isNullOrBlank()) " • ${pack.resolution}" else ""
@@ -178,7 +179,7 @@ class H2RxDMoviesProvider : MainAPI() {
                                 newEpisode(packPayload) {
                                     this.name = "📦 [ZIP PACK] $cleanName$resStr$sizeStr"
                                     this.season = 0
-                                    this.episode = index + 1
+                                    this.episode = packEpisodeIndex++
                                     this.posterUrl = media.poster
                                 }
                             )
@@ -196,8 +197,8 @@ class H2RxDMoviesProvider : MainAPI() {
                     this.score = Score.from10(media.rating_num)
                 }
             } else {
-                val dlResp = app.get("$apiUrl/api/v1/movies/$id/downloads", headers = requestHeaders, timeout = 15L)
-                val downloads = if (dlResp.isSuccessful) {
+                val dlResp = HubCloud.retryGet("$apiUrl/api/v1/movies/$id/downloads", headers = requestHeaders, timeout = 20L)
+                val downloads = if (dlResp != null && dlResp.isSuccessful) {
                     val dlData: MovieDownloadsResponse = mapper.readValue(dlResp.text)
                     dlData.downloads
                 } else {
@@ -222,6 +223,51 @@ class H2RxDMoviesProvider : MainAPI() {
         }
     }
 
+    private fun getServerPriority(source: String): Int {
+        val s = source.lowercase()
+        return when {
+            s.contains("10gbps") -> 5
+            s.contains("fsl") || s.contains("r2") -> 4
+            s.contains("fast") || s.contains("stream") -> 3
+            s.contains("pixeldrain fast") -> 2
+            s.contains("pixeldrain") -> 1
+            else -> 0
+        }
+    }
+
+    private suspend fun resolveCandidateUrl(
+        targetUrl: String,
+        download: DownloadItem,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        collector: (ExtractorLink) -> Unit
+    ): Boolean {
+        val url = targetUrl.trim()
+        if (url.isBlank()) return false
+        val lower = url.lowercase()
+        var resolved = false
+        val trackingCallback: (ExtractorLink) -> Unit = { link ->
+            resolved = true
+            collector(link)
+        }
+
+        when {
+            lower.contains("hubcloud") || lower.contains("hubc") || lower.contains("gamerxyt") -> {
+                HubCloud.resolveHubCloud(url, download, trackingCallback)
+            }
+            lower.contains("gdflix") || lower.contains("only-apis") -> {
+                HubCloud.resolveGDFlix(url, download, trackingCallback)
+            }
+            lower.contains("link.xdmovies.wtf") -> {
+                // Monetization shortener gated behind Cloudflare challenge; cannot resolve non-interactively.
+                return false
+            }
+            else -> {
+                loadExtractor(url, subtitleCallback, trackingCallback)
+            }
+        }
+        return resolved
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -236,26 +282,56 @@ class H2RxDMoviesProvider : MainAPI() {
 
         if (downloads.isEmpty()) return false
 
+        data class ExtLinkWithSize(
+            val link: ExtractorLink,
+            val sizeBytes: Long,
+            val serverPriority: Int
+        )
+
+        val collectedLinks = Collections.synchronizedList(mutableListOf<ExtLinkWithSize>())
+
         coroutineScope {
             downloads.map { download ->
                 async {
-                    val hubUrl = download.hubcloud_url
-                    if (!hubUrl.isNullOrBlank() && (hubUrl.contains("hubcloud") || hubUrl.contains("hubc"))) {
-                        HubCloud.resolveHubCloud(hubUrl, download, callback)
-                    } else {
-                        val dlUrl = download.download_url
-                        if (!dlUrl.isNullOrBlank()) {
-                            if (dlUrl.contains("hubcloud") || dlUrl.contains("hubc")) {
-                                HubCloud.resolveHubCloud(dlUrl, download, callback)
-                            } else {
-                                loadExtractor(dlUrl, subtitleCallback, callback)
-                            }
+                    val itemBytes = download.size_bytes?.takeIf { it > 0L }
+                        ?: HubCloud.parseSizeToBytes(
+                            download.size ?: download.file_name,
+                            HubCloud.getQualityInt(download.resolution ?: download.file_name)
+                        )
+
+                    val collector: (ExtractorLink) -> Unit = { extLink ->
+                        val linkBytes = HubCloud.parseSizeToBytes(extLink.name, extLink.quality)
+                            .takeIf { it > 0L } ?: itemBytes
+                        collectedLinks.add(ExtLinkWithSize(extLink, linkBytes, getServerPriority(extLink.source)))
+                    }
+
+                    val candidates = listOfNotNull(
+                        download.hubcloud_url?.trim()?.takeIf { it.isNotBlank() },
+                        download.download_url?.trim()?.takeIf { it.isNotBlank() }
+                    ).distinct()
+
+                    for (candidate in candidates) {
+                        if (resolveCandidateUrl(candidate, download, subtitleCallback, collector)) {
+                            break
                         }
                     }
                 }
             }.awaitAll()
         }
 
-        return true
+        val seenUrls = mutableSetOf<String>()
+        val sortedLinks = collectedLinks
+            .filter { seenUrls.add(it.link.url) }
+            .sortedWith(
+                compareByDescending<ExtLinkWithSize> { it.sizeBytes }
+                    .thenByDescending { it.link.quality }
+                    .thenByDescending { it.serverPriority }
+            )
+
+        for (entry in sortedLinks) {
+            callback(entry.link)
+        }
+
+        return sortedLinks.isNotEmpty()
     }
 }

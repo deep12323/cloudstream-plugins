@@ -33,11 +33,12 @@ flowchart LR
 | **External Players** | `ExternalPlayers` | **`4`** | External video players integration |
 | **Skip Torrent Warning**| `SkipTorrentWarning` | `3` | Bypasses torrent confirmation dialog & displays live stats |
 | **Popup Blocker** | `PopupBlocker` | **`3`** | Universal shield blocking donation popups, announcement modals, and dialogs across all extensions (AllForU, CNCVerse, Raghav, Phisher Repo, etc.) |
-| **H2RxDMovies** | `H2RxDMovies` | **`4`** | 25-row catalogue streaming movies & TV series via HubCloud |
+| **H2RxDMovies** | `H2RxDMovies` | **`5`** | 25-row catalogue streaming movies & TV series via HubCloud |
 | **Allinone Live TV** | `AllInOneLiveTV` | **`1`** | Live TV & Sports channels (JioTV Plus, SonyLiv, Sports TV, Fancode) |
 | **MoviesDrive** | `MoviesDrive` | **`10`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
 | **DesireMovies** | `DesireMovies` | **`2`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
+| **AudioBookBay** | `AudioBookBay` | **`1`** | Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent |
 
 ---
 
@@ -344,6 +345,30 @@ flowchart LR
   5. **GDFlix Filename Regex**:
      Replaced greedy multiline fallback `Regex("""/([^/]+\.(?:mkv|mp4))""")` with precise token match `Regex("""(?i)(?:Name\s*:\s*|Download\s+|title>GDFlix\s*\|\s*)([A-Za-z0-9._-]+\.(?:mkv|mp4))""")`.
   6. **Versions**: Bumped **MoviesDrive to v10** and **DesireMovies to v2**.
+
+---
+
+### 11. AudioBookBay: Audiobook Provider with Multi-Chapter TorrServer Streaming (v1)
+* **Features**:
+  1. **27 Curated Categories & Tags**: Browse Latest Audiobooks, Bestsellers, Sci-Fi, Fantasy, Thriller, Mystery, Crime, Action, Adventure, Horror, LitRPG, Light Novel, Romance, Classics, Full Cast, History, Biographies, Business, Self-Help, Science, Computer & Tech, and Language feeds (`English`, `Spanish`, `French`, `German`), with pagination.
+  2. **Paginated Search & Quick Search**: Queries `/?s=...` and `/page/<page>/?s=...` cleanly.
+  3. **Rich Metadata Extraction**: Parses Title, Cover Art, Release Year, Author, Narrator (as cast credits), Format, Abridged/Unabridged status, File Size, Language, Categories, and Synopsis.
+  4. **Info Hash -> Magnet & Multi-Chapter Streaming**: Constructs tracker-enriched magnet links from AudioBookBay's Info Hash and tracker table, resolves multi-file audiobooks into naturally sorted chapters via TorrServer (`TvSeriesLoadResponse`) or falls back cleanly to HTML chapter parsing and `ExtractorLinkType.MAGNET`.
+  5. **Configurable Domain Mirror**: Settings dialog allows overriding or resetting the active AudioBookBay domain (default `https://audiobookbay.lu`).
+  6. **Version**: Initial release **v1**.
+
+### 12. H2RxDMovies: Link Resolution, Retry & Extractor Fixes (v5)
+* **Problem**: Several H2RxDMovies links failed to load or emitted dead 404 streams (including `gpdl.hubcloud.*` links, `pixel.hubcloud.*` redirects, dummy PixelDrain ID `negn6f`, transient API/host timeouts, and multi-season pack episode collisions).
+* **Solutions**:
+  1. **HubCloud Extractor Hardening**:
+     * Added transient network retry (`retryGet`) for API and HubCloud requests.
+     * Added Jsoup fallback for Step 1 gateway extraction (`a[href*='hubcloud.php'], a#download, a.btn-primary, a.btn-success`) and direct-page fallback when no intermediate gateway is present.
+     * Added `gpdl*.hubcloud.*` and `?id=` 10Gbps link matching with `Referer` propagation, `isSuccessful` validation, `"Unable to Get Download Link"` rejection, and `cryptonewz.online` / `link=` / `url=` extraction.
+     * Filtered dummy PixelDrain IDs (`negn6f`, length `< 6`) and added `cdn.pixeldrain.eu.cc` bypass alongside `.r2.dev` and `pages.dev/?url=` support.
+  2. **Provider & Plugin Improvements**:
+     * Added `hubcloud_url` -> `download_url` fallback on failure, GDFlix support, and registered HubCloud mirror domains (`hubcloud.mov`, `hubcloud.one`, `hubcloud.cx`, `hubcloud.foo`, `hubcloud.fans`).
+     * Fixed Season 0 pack episode index collisions across multi-season series and sorted emitted links by descending file size, resolution, and server priority.
+  3. **Version**: Bumped to **v5** in `H2RxDMovies/build.gradle.kts`, `.github/workflows/build.yml`, and `agent.md`.
 
 ---
 
