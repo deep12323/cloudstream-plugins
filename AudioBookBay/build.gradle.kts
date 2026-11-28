@@ -1,12 +1,12 @@
 import java.io.File
 
-version = 2
+version = 3
 
 cloudstream {
     description = "Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent"
     authors = listOf("deepu2135")
     status = 1
-    tvTypes = listOf("AudioBook", "TvSeries", "Torrent")
+    tvTypes = listOf("AudioBook", "Torrent")
     requiresResources = false
     language = "en"
     iconUrl = "https://audiobookbay.lu/apple-touch-icon.png"

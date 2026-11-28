@@ -174,12 +174,12 @@ jobs:
             {
               "name": "AudioBookBay",
               "internalName": "AudioBookBay",
-              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/AudioBookBay.cs3?v=2",
-              "tvTypes": ["AudioBook", "TvSeries", "Torrent"],
+              "url": "https://raw.githubusercontent.com/deep12323/cloudstream-plugins/builds/AudioBookBay.cs3?v=3",
+              "tvTypes": ["AudioBook", "Torrent"],
               "language": "en",
               "iconUrl": "https://audiobookbay.lu/apple-touch-icon.png",
               "apiVersion": 1,
-              "version": 2,
+              "version": 3,
               "authors": ["deepu2135"],
               "status": 1,
               "description": "Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent"

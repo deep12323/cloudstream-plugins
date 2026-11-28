@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
 class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI() {
@@ -17,11 +16,6 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
         private const val KEY_DOMAIN = "active_domain"
         const val DEFAULT_DOMAIN = "https://audiobookbay.lu"
         private const val FALLBACK_POSTER = "https://audiobookbay.lu/apple-touch-icon.png"
-
-        private val AUDIO_FILE_ROW_REGEX = Regex(
-            """^(.+\.(?:mp3|m4b|m4a|aac|ogg|opus|flac|wav|wma|mp4|mkv))\s+([\d.,]+\s*[KMGTP]?Bs?)$""",
-            RegexOption.IGNORE_CASE
-        )
 
         fun getSavedDomain(context: Context?): String {
             val saved = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -45,7 +39,7 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
     override val hasMainPage = true
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.AudioBook, TvType.TvSeries, TvType.Torrent)
+    override val supportedTypes = setOf(TvType.AudioBook, TvType.Torrent)
     override var lang = "en"
 
     private val requestHeaders = mapOf(
@@ -207,8 +201,6 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
-    private data class HtmlAudioFile(val fileName: String, val sizeLabel: String)
-
     override suspend fun load(url: String): LoadResponse? {
         val targetUrl = rewriteToActiveHost(url)
         val resp = try {
@@ -243,11 +235,10 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
             .map { cleanText(it.text()) }
             .filter { it.isNotBlank() }
 
-        // Parse torrent table: Info Hash, Trackers, File Size, and multifile entries
+        // Parse torrent table: Info Hash, Trackers, and File Size
         var infoHash: String? = null
         var fileSizeLabel: String? = null
         val trackers = mutableListOf<String>()
-        val htmlFiles = mutableListOf<HtmlAudioFile>()
 
         for (row in post.select("table tr")) {
             val cells = row.select("td")
@@ -269,18 +260,6 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
                     label.contains("file size") -> {
                         if (value.isNotBlank()) fileSizeLabel = value
                     }
-                }
-            } else if (cells.size == 1) {
-                val text = cleanText(cells[0].text())
-                if (text.isBlank() || text.startsWith(".pad", ignoreCase = true)) continue
-                val match = AUDIO_FILE_ROW_REGEX.find(text)
-                if (match != null) {
-                    htmlFiles.add(
-                        HtmlAudioFile(
-                            fileName = match.groupValues[1].trim(),
-                            sizeLabel = match.groupValues[2].trim()
-                        )
-                    )
                 }
             }
         }
@@ -331,75 +310,6 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
         if (author != null) actors.add(ActorData(Actor(author, null), roleString = "Author"))
         if (narrator != null) actors.add(ActorData(Actor(narrator, null), roleString = "Narrator"))
 
-        // Resolve chapters via TorrServer when available, otherwise fallback to HTML file list
-        if (magnetUrl.isNotBlank()) {
-            val session = TorrentStreamHelper.resolveTorrServerSession(
-                context = pluginContext,
-                magnetUrl = magnetUrl,
-                title = title,
-                maxWaitSeconds = 6
-            )
-
-            if (session != null && session.files.size > 1) {
-                val episodes = session.files.mapIndexed { idx, file ->
-                    val sizeStr = TorrentStreamHelper.formatFileSize(file.length)
-                    val epLabel = TorrentStreamHelper.cleanChapterDisplayName(file.path)
-                    newEpisode(
-                        url = "$magnetUrl#fileId=${file.id}",
-                        initializer = {
-                            this.name = if (sizeStr.isNotBlank()) "$epLabel [$sizeStr]" else epLabel
-                            this.episode = idx + 1
-                        },
-                        fix = false
-                    )
-                }
-                return newTvSeriesLoadResponse(title, targetUrl, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = plotText
-                    this.tags = tags.distinct()
-                    this.actors = actors
-                }
-            }
-
-            if (session != null && session.files.size == 1) {
-                val singleFile = session.files.first()
-                return newMovieLoadResponse(title, targetUrl, TvType.AudioBook, "$magnetUrl#fileId=${singleFile.id}") {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = plotText
-                    this.tags = tags.distinct()
-                    this.actors = actors
-                }
-            }
-
-            // TorrServer timed out or offline during load(): use HTML multifile table if >1 chapters exist
-            val sortedHtmlFiles = htmlFiles.sortedWith { a, b ->
-                TorrentStreamHelper.naturalOrderComparator.compare(a.fileName, b.fileName)
-            }
-            if (sortedHtmlFiles.size > 1) {
-                val episodes = sortedHtmlFiles.mapIndexed { idx, hf ->
-                    val epLabel = TorrentStreamHelper.cleanChapterDisplayName(hf.fileName)
-                    val encodedName = URLEncoder.encode(hf.fileName, "UTF-8")
-                    newEpisode(
-                        url = "$magnetUrl#fileName=$encodedName",
-                        initializer = {
-                            this.name = "$epLabel [${hf.sizeLabel}]"
-                            this.episode = idx + 1
-                        },
-                        fix = false
-                    )
-                }
-                return newTvSeriesLoadResponse(title, targetUrl, TvType.TvSeries, episodes) {
-                    this.posterUrl = poster
-                    this.year = year
-                    this.plot = plotText
-                    this.tags = tags.distinct()
-                    this.actors = actors
-                }
-            }
-        }
-
         return newMovieLoadResponse(title, targetUrl, TvType.AudioBook, magnetUrl) {
             this.posterUrl = poster
             this.year = year
@@ -410,8 +320,7 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
     }
 
     /**
-     * Strips chapter fragment suffixes and any accidental domain prefix before "magnet:"
-     * (e.g. if CloudStream's fixUrl previously prepended mainUrl to a magnet URI).
+     * Strips any chapter fragment suffixes and any accidental domain prefix before "magnet:".
      */
     private fun extractCleanMagnet(data: String): String {
         val base = data.substringBefore("#fileId=").substringBefore("#fileName=").trim()
@@ -425,83 +334,19 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        if (data.isBlank()) return false
-
         val cleanMagnet = extractCleanMagnet(data)
-        val targetFileId = if (data.contains("#fileId=")) {
-            data.substringAfter("#fileId=").toIntOrNull()
-        } else {
-            null
-        }
-        val targetFileName = if (data.contains("#fileName=")) {
-            TorrentStreamHelper.decodeParam(data.substringAfter("#fileName="))
-        } else {
-            null
-        }
+        if (cleanMagnet.isBlank()) return false
 
-        val session = TorrentStreamHelper.resolveTorrServerSession(
-            context = pluginContext,
-            magnetUrl = cleanMagnet,
-            title = "AudioBookBay",
-            maxWaitSeconds = 25
+        callback(
+            newExtractorLink(
+                source = this.name,
+                name = "Magnet (BitTorrent)",
+                url = cleanMagnet,
+                type = ExtractorLinkType.MAGNET
+            ) {
+                this.referer = ""
+            }
         )
-
-        var emittedDirect = false
-        if (session != null && session.files.isNotEmpty()) {
-            val matchedFiles = when {
-                targetFileId != null -> session.files.filter { it.id == targetFileId }.ifEmpty { session.files }
-                targetFileName != null -> {
-                    val baseTarget = targetFileName.substringAfterLast('/')
-                    session.files.filter {
-                        it.fileName.equals(baseTarget, ignoreCase = true) ||
-                            it.path.equals(targetFileName, ignoreCase = true) ||
-                            it.fileName.contains(baseTarget.substringBeforeLast('.'), ignoreCase = true)
-                    }.ifEmpty { session.files }
-                }
-                else -> session.files
-            }
-
-            for (file in matchedFiles) {
-                val streamUrl = TorrentStreamHelper.buildStreamUrl(
-                    serverUrl = session.serverUrl,
-                    fileName = file.fileName,
-                    hash = session.hash,
-                    fileId = file.id
-                )
-                val sizeStr = TorrentStreamHelper.formatFileSize(file.length)
-                val label = TorrentStreamHelper.cleanChapterDisplayName(file.path)
-                val displayName = if (sizeStr.isNotBlank()) "TorrServer • $label [$sizeStr]" else "TorrServer • $label"
-
-                callback(
-                    newExtractorLink(
-                        source = this.name,
-                        name = displayName,
-                        url = streamUrl,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = ""
-                    }
-                )
-                emittedDirect = true
-            }
-        }
-
-        // Always provide direct Magnet fallback when TorrServer didn't resolve a direct stream,
-        // or for single-link playback as an alternative option for external torrent clients (e.g. 1DM).
-        if (!emittedDirect || (targetFileId == null && targetFileName == null)) {
-            val magnetWithIndex = if (targetFileId != null) "$cleanMagnet&index=$targetFileId" else cleanMagnet
-            callback(
-                newExtractorLink(
-                    source = this.name,
-                    name = "Magnet (BitTorrent)",
-                    url = magnetWithIndex,
-                    type = ExtractorLinkType.MAGNET
-                ) {
-                    this.referer = ""
-                }
-            )
-        }
-
         return true
     }
 }

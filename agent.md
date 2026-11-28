@@ -38,7 +38,7 @@ flowchart LR
 | **MoviesDrive** | `MoviesDrive` | **`10`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
 | **DesireMovies** | `DesireMovies` | **`2`** | Stream links true resolution & size detection, eliminated duplicate 1080p badges & greedy HTML matching |
 | **System Font** | `SystemFont` | **`13`** | Safe Pre-Inflation Shield, PreDraw Gate & Native Opaque BottomSheet Protection |
-| **AudioBookBay** | `AudioBookBay` | **`2`** | Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent |
+| **AudioBookBay** | `AudioBookBay` | **`3`** | Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent |
 
 ---
 
@@ -356,7 +356,8 @@ flowchart LR
   4. **Info Hash -> Magnet & Multi-Chapter Streaming**: Constructs tracker-enriched magnet links from AudioBookBay's Info Hash and tracker table, resolves multi-file audiobooks into naturally sorted chapters via TorrServer (`TvSeriesLoadResponse`) or falls back cleanly to HTML chapter parsing and `ExtractorLinkType.MAGNET`.
   5. **Configurable Domain Mirror**: Settings dialog allows overriding or resetting the active AudioBookBay domain (default `https://audiobookbay.lu`).
   6. **Magnet URL Fix (v2)**: Passed `fix = false` to `newEpisode(...)` so CloudStream's `fixUrl()` no longer prepends `https://audiobookbay.lu/` to `magnet:?...` chapter links, and normalized `loadLinks()` inputs so magnet links always start from `magnet:`.
-  7. **Version**: Updated to **v2**.
+  7. **Single Link Mode (v3)**: Always return a single `MovieLoadResponse` (`TvType.AudioBook`) with no multi-episode splitting, and emit only the single `Magnet (BitTorrent)` link directly in `loadLinks()` without TorrServer polling/delays.
+  8. **Version**: Updated to **v3**.
 
 ### 12. H2RxDMovies: Link Resolution, Retry & Extractor Fixes (v5)
 * **Problem**: Several H2RxDMovies links failed to load or emitted dead 404 streams (including `gpdl.hubcloud.*` links, `pixel.hubcloud.*` redirects, dummy PixelDrain ID `negn6f`, transient API/host timeouts, and multi-season pack episode collisions).
