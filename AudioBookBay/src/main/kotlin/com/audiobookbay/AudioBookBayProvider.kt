@@ -344,10 +344,14 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
                 val episodes = session.files.mapIndexed { idx, file ->
                     val sizeStr = TorrentStreamHelper.formatFileSize(file.length)
                     val epLabel = TorrentStreamHelper.cleanChapterDisplayName(file.path)
-                    newEpisode("$magnetUrl#fileId=${file.id}") {
-                        this.name = if (sizeStr.isNotBlank()) "$epLabel [$sizeStr]" else epLabel
-                        this.episode = idx + 1
-                    }
+                    newEpisode(
+                        url = "$magnetUrl#fileId=${file.id}",
+                        initializer = {
+                            this.name = if (sizeStr.isNotBlank()) "$epLabel [$sizeStr]" else epLabel
+                            this.episode = idx + 1
+                        },
+                        fix = false
+                    )
                 }
                 return newTvSeriesLoadResponse(title, targetUrl, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
@@ -377,10 +381,14 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
                 val episodes = sortedHtmlFiles.mapIndexed { idx, hf ->
                     val epLabel = TorrentStreamHelper.cleanChapterDisplayName(hf.fileName)
                     val encodedName = URLEncoder.encode(hf.fileName, "UTF-8")
-                    newEpisode("$magnetUrl#fileName=$encodedName") {
-                        this.name = "$epLabel [${hf.sizeLabel}]"
-                        this.episode = idx + 1
-                    }
+                    newEpisode(
+                        url = "$magnetUrl#fileName=$encodedName",
+                        initializer = {
+                            this.name = "$epLabel [${hf.sizeLabel}]"
+                            this.episode = idx + 1
+                        },
+                        fix = false
+                    )
                 }
                 return newTvSeriesLoadResponse(title, targetUrl, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
@@ -401,6 +409,16 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
         }
     }
 
+    /**
+     * Strips chapter fragment suffixes and any accidental domain prefix before "magnet:"
+     * (e.g. if CloudStream's fixUrl previously prepended mainUrl to a magnet URI).
+     */
+    private fun extractCleanMagnet(data: String): String {
+        val base = data.substringBefore("#fileId=").substringBefore("#fileName=").trim()
+        val magnetIndex = base.indexOf("magnet:", ignoreCase = true)
+        return if (magnetIndex >= 0) base.substring(magnetIndex) else base
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -409,7 +427,7 @@ class AudioBookBayProvider(private val pluginContext: Context? = null) : MainAPI
     ): Boolean {
         if (data.isBlank()) return false
 
-        val cleanMagnet = data.substringBefore("#fileId=").substringBefore("#fileName=")
+        val cleanMagnet = extractCleanMagnet(data)
         val targetFileId = if (data.contains("#fileId=")) {
             data.substringAfter("#fileId=").toIntOrNull()
         } else {

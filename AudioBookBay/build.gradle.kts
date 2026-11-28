@@ -1,6 +1,6 @@
 import java.io.File
 
-version = 1
+version = 2
 
 cloudstream {
     description = "Stream unabridged audiobooks from AudioBookBay via TorrServer & BitTorrent"
